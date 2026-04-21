@@ -16,12 +16,13 @@ Python.
 pip install aiolibdatachannel
 ```
 
-Wheels are published for Linux (`manylinux_2_28` x86_64 / aarch64), macOS
-(x86_64 / arm64) and Windows (AMD64). libdatachannel is bundled as a
-shared library inside the wheel and loaded via
-[`cffi`](https://cffi.readthedocs.io/) — no native Python extension, no
-per-Python-version build, one `py3-none-<platform>` wheel covers every
-supported interpreter.
+Wheels are published for Linux (`manylinux_2_28` x86_64 / aarch64) and
+macOS (x86_64 / arm64). Windows isn't supported yet — libdatachannel
+dynamically links OpenSSL and the wheel packaging for that on Windows is
+still open. libdatachannel is bundled as a shared library inside the
+wheel and loaded via [`cffi`](https://cffi.readthedocs.io/) — no native
+Python extension, no per-Python-version build, one
+`py3-none-<platform>` wheel covers every supported interpreter.
 
 ## Quickstart
 

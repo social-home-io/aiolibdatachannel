@@ -45,12 +45,10 @@ jobs:
             arch: x86_64
           - os: macos-14
             arch: arm64
-          # Windows amd64 + arm64. windows-11-arm is a native ARM64 runner
-          # which avoids the reliability issues of cross-compiling.
-          - os: windows-latest
-            arch: AMD64
-          - os: windows-11-arm
-            arch: ARM64
+          # Windows support is deferred — the bundled libdatachannel
+          # dynamically links OpenSSL's DLLs and we haven't wired up the
+          # delvewheel / os.add_dll_directory dance needed to make that
+          # work on end-user machines.
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,9 +78,9 @@ jobs:
             MACOSX_DEPLOYMENT_TARGET=11.0
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio"
           CIBW_TEST_COMMAND: "pytest {project}/tests -q"
-          # Skip tests on macOS/Windows runners (no loopback UDP perms
-          # guaranteed in hosted runners). Linux runs the full suite.
-          CIBW_TEST_SKIP: "*-macosx_* *-win_*"
+          # Skip tests on macOS runners — loopback UDP perms aren't
+          # reliable on hosted macOS. Linux wheel tests run the full suite.
+          CIBW_TEST_SKIP: "*-macosx_*"
 
       - uses: actions/upload-artifact@v4
         with:
