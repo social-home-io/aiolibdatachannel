@@ -1,0 +1,106 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "aiolibdatachannel"
+version = "0.1.0"
+description = "asyncio-friendly Python wrapper for libdatachannel (WebRTC Data Channels)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MPL-2.0" }
+authors = [{ name = "Pascal Vizeli", email = "pascal.vizeli@nabucasa.com" }]
+keywords = ["webrtc", "datachannel", "libdatachannel", "asyncio", "p2p"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications",
+    "Topic :: Internet",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/pvizeli/aiolibdatachannel"
+Issues = "https://github.com/pvizeli/aiolibdatachannel/issues"
+"libdatachannel" = "https://github.com/paullouisageneau/libdatachannel"
+
+[tool.scikit-build]
+minimum-version = "0.9"
+build-dir = "build/{wheel_tag}"
+cmake.version = ">=3.24"
+ninja.make-fallback = true
+wheel.py-api = "cp312"
+wheel.packages = ["src/aiolibdatachannel"]
+
+# Rebuild editable installs on-demand when sources change.
+editable.mode = "redirect"
+editable.rebuild = true
+
+# Ship the libdatachannel sources in the sdist, but strip unused subdirs.
+sdist.include = [
+    "vendor/libdatachannel/CMakeLists.txt",
+    "vendor/libdatachannel/LICENSE",
+    "vendor/libdatachannel/cmake/**",
+    "vendor/libdatachannel/include/**",
+    "vendor/libdatachannel/src/**",
+    "vendor/libdatachannel/deps/**",
+]
+sdist.exclude = [
+    "vendor/libdatachannel/.git",
+    "vendor/libdatachannel/.github",
+    "vendor/libdatachannel/examples",
+    "vendor/libdatachannel/test",
+    "vendor/libdatachannel/pages",
+    "build",
+    "dist",
+    ".venv",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "ASYNC",
+    "SIM",
+    "RUF",
+]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["src"]
+packages = ["aiolibdatachannel"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = ["-ra", "--strict-markers", "--strict-config"]
