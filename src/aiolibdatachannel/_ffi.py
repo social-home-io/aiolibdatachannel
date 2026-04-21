@@ -213,30 +213,42 @@ def _locate_library() -> Path:
 
     if sys.platform == "darwin":
         names = ("libdatachannel.dylib", "libdatachannel.0.dylib")
+        pattern = "libdatachannel*.dylib"
     elif sys.platform == "win32":
         names = ("datachannel.dll", "libdatachannel.dll")
+        pattern = "*datachannel*.dll"
     else:
         names = ("libdatachannel.so", "libdatachannel.so.0")
+        pattern = "libdatachannel.so*"
 
-    candidates: list[Path] = []
+    searched: list[str] = []
     pkg_dir = Path(__file__).parent
-    candidates.extend(pkg_dir / "_lib" / name for name in names)
-    candidates.extend(pkg_dir / name for name in names)
-    # Fallback for source checkouts without an install step.
+
+    # 1. Installed layout: <package>/_lib/<libname> (what scikit-build-core
+    #    places in the built wheel via our CMakeLists.txt install target).
+    for name in names:
+        for p in (pkg_dir / "_lib" / name, pkg_dir / name):
+            searched.append(str(p))
+            if p.is_file():
+                return p
+
+    # 2. Editable / source-tree layout: search the CMake build tree.
+    #    CMake's output layout varies by generator — Ninja puts the shared
+    #    lib at the libdatachannel subdir root, multi-config generators
+    #    (Visual Studio) add a Release/ / Debug/ subdir — so rglob the
+    #    whole tree rather than guess every possibility.
     repo_root = pkg_dir.parent.parent
-    for build_dir in (repo_root / "build").glob("*"):
-        for name in names:
-            candidates.append(build_dir / name)
-            candidates.append(build_dir / "vendor" / "libdatachannel" / name)
+    build_root = repo_root / "build"
+    if build_root.is_dir():
+        searched.append(f"{build_root} (glob: **/{pattern})")
+        for hit in build_root.rglob(pattern):
+            if hit.is_file():
+                return hit
 
-    for c in candidates:
-        if c.exists():
-            return c
-
-    searched = "\n  ".join(str(p) for p in candidates)
     raise FileNotFoundError(
-        f"libdatachannel shared library not found. Searched:\n  {searched}\n"
-        "Set AIOLIBDATACHANNEL_LIB to the absolute path of the .so/.dylib/.dll."
+        "libdatachannel shared library not found. Searched:\n  "
+        + "\n  ".join(searched)
+        + "\nSet AIOLIBDATACHANNEL_LIB to the absolute path of the .so/.dylib/.dll."
     )
 
 
