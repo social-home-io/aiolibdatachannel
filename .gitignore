@@ -38,3 +38,6 @@ wheelhouse/
 
 # Claude Code state
 .claude/
+
+# setuptools-scm writes the resolved version here at build time.
+aiolibdatachannel/_version.py
