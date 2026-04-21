@@ -237,7 +237,7 @@ def _locate_library() -> Path:
     #    lib at the libdatachannel subdir root, multi-config generators
     #    (Visual Studio) add a Release/ / Debug/ subdir — so rglob the
     #    whole tree rather than guess every possibility.
-    repo_root = pkg_dir.parent.parent
+    repo_root = pkg_dir.parent
     build_root = repo_root / "build"
     if build_root.is_dir():
         searched.append(f"{build_root} (glob: **/{pattern})")

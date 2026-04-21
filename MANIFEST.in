@@ -1,4 +1,4 @@
-graft src
+graft aiolibdatachannel
 graft vendor/libdatachannel/cmake
 graft vendor/libdatachannel/include
 graft vendor/libdatachannel/src

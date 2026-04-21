@@ -20,7 +20,7 @@ echo "==> Installing in editable mode with dev extras..."
 pip install -e ".[dev]"
 
 echo "==> Running linters and tests..."
-ruff check src tests
-ruff format --check src tests
-mypy src
+ruff check aiolibdatachannel tests
+ruff format --check aiolibdatachannel tests
+mypy aiolibdatachannel
 pytest -q

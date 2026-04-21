@@ -50,7 +50,7 @@ ninja.make-fallback = true
 # py3-none-<platform>: no Python-version-specific code in our wheel, just a
 # shared lib. cffi talks to it at runtime via the stable C ABI.
 wheel.py-api = "py3"
-wheel.packages = ["src/aiolibdatachannel"]
+wheel.packages = ["aiolibdatachannel"]
 
 # Rebuild editable installs on-demand when sources change.
 editable.mode = "redirect"
@@ -79,7 +79,7 @@ sdist.exclude = [
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["src", "tests"]
+src = [".", "tests"]
 
 [tool.ruff.lint]
 select = [
@@ -98,7 +98,7 @@ ignore = ["E501"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-mypy_path = ["src"]
+mypy_path = ["."]
 packages = ["aiolibdatachannel"]
 
 # cffi doesn't ship type stubs; we lean on its runtime dispatch.
