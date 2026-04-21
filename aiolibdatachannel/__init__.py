@@ -10,7 +10,7 @@ from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 
 from . import _core
-from .config import DataChannelOptions, RTCConfiguration
+from .config import DataChannelOptions, IceServer, IceServerLike, RTCConfiguration
 from .data_channel import DataChannel
 from .enums import (
     CertificateType,
@@ -22,7 +22,20 @@ from .enums import (
     TransportPolicy,
 )
 from .exceptions import ConnectionClosedError, RTCError
-from .peer_connection import IceCandidate, LocalDescription, PeerConnection
+from .peer_connection import (
+    DataChannelEvent,
+    GatheringStateChangeEvent,
+    IceCandidate,
+    IceStateChangeEvent,
+    LocalCandidateEvent,
+    LocalDescription,
+    LocalDescriptionEvent,
+    PCEvent,
+    PeerConnection,
+    SdpType,
+    SignalingStateChangeEvent,
+    StateChangeEvent,
+)
 
 try:
     __version__ = version("aiolibdatachannel")
@@ -33,17 +46,28 @@ __all__ = [
     "CertificateType",
     "ConnectionClosedError",
     "DataChannel",
+    "DataChannelEvent",
     "DataChannelOptions",
     "GatheringState",
+    "GatheringStateChangeEvent",
     "ICEState",
     "IceCandidate",
+    "IceServer",
+    "IceServerLike",
+    "IceStateChangeEvent",
+    "LocalCandidateEvent",
     "LocalDescription",
+    "LocalDescriptionEvent",
     "LogLevel",
+    "PCEvent",
     "PeerConnection",
     "RTCConfiguration",
     "RTCError",
     "RTCState",
+    "SdpType",
     "SignalingState",
+    "SignalingStateChangeEvent",
+    "StateChangeEvent",
     "TransportPolicy",
     "__version__",
     "init_logger",

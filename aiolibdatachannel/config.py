@@ -4,10 +4,52 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from urllib.parse import quote
 
 from .enums import CertificateType, TransportPolicy
 
-__all__ = ["DataChannelOptions", "RTCConfiguration"]
+__all__ = ["DataChannelOptions", "IceServer", "IceServerLike", "RTCConfiguration"]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class IceServer:
+    """Structured STUN / TURN server entry.
+
+    Either pass a bare URL string to :class:`RTCConfiguration.ice_servers`,
+    or build an :class:`IceServer` with ``username`` / ``credential`` for
+    TURN authentication. libdatachannel expects credentials inlined in
+    the URL (``turn:user:pass@host:port``); :meth:`to_url` does that for
+    you, URL-encoding any reserved characters.
+    """
+
+    url: str
+    username: str | None = None
+    credential: str | None = None
+
+    def to_url(self) -> str:
+        """Flatten to the ``scheme:[user:pass@]host`` form libdatachannel parses."""
+
+        if self.username is None and self.credential is None:
+            return self.url
+
+        # Split off the scheme we'll put the creds after.
+        scheme, _, remainder = self.url.partition(":")
+        if not remainder:
+            raise ValueError(f"IceServer.url is not a scheme-prefixed URL: {self.url!r}")
+
+        # Don't let a pre-existing `user:pass@` in the URL get clobbered.
+        if "@" in remainder.split("/", 1)[0]:
+            raise ValueError(
+                f"IceServer.url already carries credentials; pass them via "
+                f"username/credential instead of embedding them in the URL: {self.url!r}"
+            )
+
+        user = quote(self.username or "", safe="")
+        cred = quote(self.credential or "", safe="")
+        return f"{scheme}:{user}:{cred}@{remainder}"
+
+
+type IceServerLike = str | IceServer
 
 
 @dataclass(slots=True, kw_only=True)
@@ -19,7 +61,7 @@ class RTCConfiguration:
     implementation default.
     """
 
-    ice_servers: Sequence[str] = field(default_factory=list)
+    ice_servers: Sequence[IceServerLike] = field(default_factory=list)
     port_range_begin: int = 0
     port_range_end: int = 0
     mtu: int = 0

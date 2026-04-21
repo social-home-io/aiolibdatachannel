@@ -7,7 +7,7 @@ import contextlib
 from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Self, TypeVar
+from typing import Any, Literal, Self, TypeVar, cast, get_args
 
 from . import _core
 from ._loop import FutureSlot, schedule
@@ -16,9 +16,37 @@ from .data_channel import DataChannel
 from .enums import GatheringState, ICEState, RTCState, SignalingState
 from .exceptions import ConnectionClosedError, RTCError
 
-__all__ = ["IceCandidate", "LocalDescription", "PeerConnection"]
+__all__ = [
+    "DataChannelEvent",
+    "GatheringStateChangeEvent",
+    "IceCandidate",
+    "IceStateChangeEvent",
+    "LocalCandidateEvent",
+    "LocalDescription",
+    "LocalDescriptionEvent",
+    "PCEvent",
+    "PeerConnection",
+    "SdpType",
+    "SignalingStateChangeEvent",
+    "StateChangeEvent",
+]
 
 _T = TypeVar("_T")
+
+type SdpType = Literal["offer", "answer", "pranswer", "rollback"]
+_SDP_TYPES: frozenset[str] = frozenset(get_args(SdpType.__value__))
+
+
+def _coerce_sdp_type(raw: str | None, default: SdpType = "offer") -> SdpType:
+    """Narrow a raw native string to :data:`SdpType`.
+
+    libdatachannel only ever emits the four literal kinds; if something
+    unexpected comes through we fall back to ``default`` rather than
+    crash the event dispatch.
+    """
+    if raw is None or raw not in _SDP_TYPES:
+        return default
+    return cast(SdpType, raw)
 
 
 @dataclass(slots=True, frozen=True)
@@ -26,7 +54,7 @@ class LocalDescription:
     """A locally-generated session description."""
 
     sdp: str
-    type: str
+    type: SdpType
 
 
 @dataclass(slots=True, frozen=True)
@@ -35,6 +63,69 @@ class IceCandidate:
 
     candidate: str
     mid: str
+
+
+# ---- Event types -----------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class LocalDescriptionEvent:
+    """Emitted when a local session description has been produced."""
+
+    description: LocalDescription
+
+
+@dataclass(slots=True, frozen=True)
+class LocalCandidateEvent:
+    """Emitted when ICE gathering yields a new local candidate."""
+
+    candidate: IceCandidate
+
+
+@dataclass(slots=True, frozen=True)
+class StateChangeEvent:
+    """Emitted when the PeerConnection's overall state changes."""
+
+    state: RTCState
+
+
+@dataclass(slots=True, frozen=True)
+class IceStateChangeEvent:
+    """Emitted when the ICE transport state changes."""
+
+    state: ICEState
+
+
+@dataclass(slots=True, frozen=True)
+class GatheringStateChangeEvent:
+    """Emitted when the ICE gathering state changes."""
+
+    state: GatheringState
+
+
+@dataclass(slots=True, frozen=True)
+class SignalingStateChangeEvent:
+    """Emitted when the signaling state changes."""
+
+    state: SignalingState
+
+
+@dataclass(slots=True, frozen=True)
+class DataChannelEvent:
+    """Emitted when the remote peer opens a DataChannel."""
+
+    channel: DataChannel
+
+
+type PCEvent = (
+    LocalDescriptionEvent
+    | LocalCandidateEvent
+    | StateChangeEvent
+    | IceStateChangeEvent
+    | GatheringStateChangeEvent
+    | SignalingStateChangeEvent
+    | DataChannelEvent
+)
 
 
 class PeerConnection:
@@ -62,7 +153,9 @@ class PeerConnection:
         self._loop = asyncio.get_running_loop()
         cfg = config or RTCConfiguration()
         self._native = _core.PeerConnection(
-            ice_servers=list(cfg.ice_servers),
+            ice_servers=[
+                entry if isinstance(entry, str) else entry.to_url() for entry in cfg.ice_servers
+            ],
             port_range_begin=cfg.port_range_begin,
             port_range_end=cfg.port_range_end,
             mtu=cfg.mtu,
@@ -87,6 +180,7 @@ class PeerConnection:
 
         self._ice_candidates: asyncio.Queue[IceCandidate | None] = asyncio.Queue()
         self._incoming_dc: asyncio.Queue[DataChannel | None] = asyncio.Queue()
+        self._events_queue: asyncio.Queue[PCEvent | None] = asyncio.Queue()
 
         # Keep references to DataChannel wrappers so user-provided ones are
         # not garbage-collected while the native handle is still live.
@@ -110,10 +204,14 @@ class PeerConnection:
     # ---- Native callback trampolines ------------------------------------
 
     def _cb_local_description(self, sdp: str, type_: str) -> None:
-        schedule(self._loop, self._local_description.set, LocalDescription(sdp, type_))
+        schedule(
+            self._loop,
+            self._handle_local_description,
+            LocalDescription(sdp, _coerce_sdp_type(type_)),
+        )
 
     def _cb_local_candidate(self, candidate: str, mid: str) -> None:
-        schedule(self._loop, self._ice_candidates.put_nowait, IceCandidate(candidate, mid))
+        schedule(self._loop, self._handle_local_candidate, IceCandidate(candidate, mid))
 
     def _cb_state_change(self, state: int) -> None:
         schedule(self._loop, self._handle_state_change, RTCState(state))
@@ -132,9 +230,23 @@ class PeerConnection:
 
     # ---- Loop-thread dispatchers ----------------------------------------
 
+    def _emit(self, event: PCEvent) -> None:
+        """Push an event onto :meth:`events` without blocking the loop."""
+        with contextlib.suppress(asyncio.QueueFull):
+            self._events_queue.put_nowait(event)
+
+    def _handle_local_description(self, desc: LocalDescription) -> None:
+        self._local_description.set(desc)
+        self._emit(LocalDescriptionEvent(desc))
+
+    def _handle_local_candidate(self, cand: IceCandidate) -> None:
+        self._ice_candidates.put_nowait(cand)
+        self._emit(LocalCandidateEvent(cand))
+
     def _handle_state_change(self, state: RTCState) -> None:
         self._state = state
         self._state_events[state].set()
+        self._emit(StateChangeEvent(state))
         if state in (RTCState.CLOSED, RTCState.FAILED):
             # Resolve any pending futures with a close error so awaiters
             # don't hang indefinitely.
@@ -147,9 +259,11 @@ class PeerConnection:
 
     def _handle_ice_state(self, state: ICEState) -> None:
         self._ice_state = state
+        self._emit(IceStateChangeEvent(state))
 
     def _handle_gathering_state(self, state: GatheringState) -> None:
         self._gathering_state = state
+        self._emit(GatheringStateChangeEvent(state))
         if state is GatheringState.COMPLETE:
             self._gathering_complete.set(None)
             with contextlib.suppress(asyncio.QueueFull):
@@ -157,11 +271,13 @@ class PeerConnection:
 
     def _handle_signaling_state(self, state: SignalingState) -> None:
         self._signaling_state = state
+        self._emit(SignalingStateChangeEvent(state))
 
     def _handle_incoming_dc(self, handle: int) -> None:
         dc = DataChannel(handle, loop=self._loop)
         self._data_channels.append(dc)
         self._incoming_dc.put_nowait(dc)
+        self._emit(DataChannelEvent(dc))
 
     # ---- State introspection --------------------------------------------
 
@@ -208,10 +324,10 @@ class PeerConnection:
         self._native.set_local_description("offer")
         await self._gathering_complete.future
         sdp = self._native.get_local_description()
-        type_ = self._native.get_local_description_type() or "offer"
+        kind = _coerce_sdp_type(self._native.get_local_description_type(), default="offer")
         if sdp is None:
             raise RTCError("local description not available after gathering")
-        return LocalDescription(sdp=sdp, type=type_)
+        return LocalDescription(sdp=sdp, type=kind)
 
     async def create_answer(self) -> LocalDescription:
         """Same as :meth:`create_offer` but produces an answer SDP."""
@@ -221,12 +337,12 @@ class PeerConnection:
         self._native.set_local_description("answer")
         await self._gathering_complete.future
         sdp = self._native.get_local_description()
-        type_ = self._native.get_local_description_type() or "answer"
+        kind = _coerce_sdp_type(self._native.get_local_description_type(), default="answer")
         if sdp is None:
             raise RTCError("local description not available after gathering")
-        return LocalDescription(sdp=sdp, type=type_)
+        return LocalDescription(sdp=sdp, type=kind)
 
-    async def set_local_description(self, type_: str | None = None) -> LocalDescription:
+    async def set_local_description(self, type_: SdpType | None = None) -> LocalDescription:
         """Generate and set the local description without waiting for ICE.
 
         Resolves as soon as the SDP is produced; use the ``ice_candidates``
@@ -238,7 +354,7 @@ class PeerConnection:
         self._native.set_local_description(type_)
         return await self._local_description.future
 
-    async def set_remote_description(self, sdp: str, type_: str) -> None:
+    async def set_remote_description(self, sdp: str, type_: SdpType) -> None:
         """Apply an SDP offer/answer received from the remote peer."""
 
         await self._loop.run_in_executor(
@@ -263,7 +379,9 @@ class PeerConnection:
         sdp = self._native.get_local_description()
         if sdp is None:
             return None
-        return LocalDescription(sdp=sdp, type=self._native.get_local_description_type() or "")
+        return LocalDescription(
+            sdp=sdp, type=_coerce_sdp_type(self._native.get_local_description_type())
+        )
 
     @property
     def remote_description(self) -> str | None:
@@ -348,6 +466,42 @@ class PeerConnection:
                 return
             yield cand
 
+    def events(self) -> AsyncIterator[PCEvent]:
+        """Unified stream of everything the PeerConnection emits.
+
+        Yields tagged events — local descriptions, ICE candidates,
+        state transitions, incoming DataChannels — until the PC is
+        closed, at which point the iterator terminates cleanly (same
+        contract as :meth:`ice_candidates`). Intended for consumers
+        that want a single ``async for`` over every PC signal; the
+        specialised iterators (:meth:`ice_candidates`,
+        :meth:`incoming_data_channels`) remain available for narrower
+        cases and are populated in parallel.
+
+        Multi-consumer safe: each event is delivered to one consumer
+        and the close sentinel is re-injected so every concurrent
+        iterator terminates.
+
+        Usage::
+
+            async for ev in pc.events():
+                match ev:
+                    case LocalCandidateEvent(candidate=c):
+                        await remote.add_remote_candidate(c.candidate, c.mid)
+                    case StateChangeEvent(state=RTCState.FAILED):
+                        break
+        """
+        return self._iter_events()
+
+    async def _iter_events(self) -> AsyncIterator[PCEvent]:
+        while True:
+            ev = await self._events_queue.get()
+            if ev is None:
+                with contextlib.suppress(asyncio.QueueFull):
+                    self._events_queue.put_nowait(None)
+                return
+            yield ev
+
     # ---- Task ownership --------------------------------------------------
 
     def spawn_task(self, coro: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
@@ -392,6 +546,8 @@ class PeerConnection:
             self._ice_candidates.put_nowait(None)
         with contextlib.suppress(asyncio.QueueFull):
             self._incoming_dc.put_nowait(None)
+        with contextlib.suppress(asyncio.QueueFull):
+            self._events_queue.put_nowait(None)
 
         # Cancel any helper tasks the user registered. Tasks driven by our
         # own iterators will finish naturally from the sentinels above;
