@@ -6,9 +6,9 @@ lightweight C/C++ WebRTC stack. `aiolibdatachannel` exposes WebRTC
 **Peer Connections** and **Data Channels** through idiomatic `async/await`
 Python.
 
-> **Scope (v0.1):** PeerConnection + DataChannel only. WebSocket and
-> Media/RTP transport are deliberately disabled in this build to keep the
-> wheel small. See the "Roadmap" section below.
+> **Scope:** PeerConnection + DataChannel only. WebSocket and Media/RTP
+> transport are deliberately disabled in this build to keep the wheel
+> small and the API focused.
 
 ## Install
 
@@ -54,6 +54,26 @@ asyncio.run(main())
 See `examples/offerer.py` and `examples/answerer.py` for a runnable pair of
 scripts that negotiate over stdin/stdout.
 
+## Logging
+
+Route libdatachannel's internal logs through Python's standard
+[`logging`](https://docs.python.org/3/library/logging.html) module:
+
+```python
+import logging
+from aiolibdatachannel import install_python_logger
+
+logging.basicConfig(level=logging.INFO)
+install_python_logger()  # logger name defaults to "aiolibdatachannel"
+```
+
+Severities are translated (`FATAL→CRITICAL`, `ERROR→ERROR`,
+`WARNING→WARNING`, `INFO→INFO`, `DEBUG`/`VERBOSE→DEBUG`) and the filter
+threshold on the native side is derived from the Python logger's
+effective level, so you don't pay to format lines that would be filtered
+out anyway. Pass `install_python_logger(my_logger)` or
+`install_python_logger(level=LogLevel.DEBUG)` to customise.
+
 ## Development
 
 ```bash
@@ -66,13 +86,6 @@ pytest
 See [docs/BUILDING.md](docs/BUILDING.md) for detailed build instructions,
 including how to switch TLS backends and how to bump the bundled
 libdatachannel version.
-
-## Roadmap
-
-- [ ] WebSocket client + server support (`NO_WEBSOCKET=OFF`)
-- [ ] Media / RTP tracks (`NO_MEDIA=OFF`)
-- [ ] First-class `logging` integration with `rtcInitLogger`
-- [ ] Trio / AnyIO variant
 
 ## License
 
