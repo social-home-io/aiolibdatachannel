@@ -53,9 +53,10 @@ jobs:
             arch: x86_64
           - os: ubuntu-24.04-arm
             arch: aarch64
-          # macOS amd64 + arm64.
-          - os: macos-13
-            arch: x86_64
+          # macOS arm64 only. Intel Mac (x86_64) is skipped — modern
+          # Macs are all Apple Silicon. The deployment target is 14.0
+          # because that's the minimum macOS the Homebrew openssl@3
+          # bottle ships with; delocate refuses to downgrade it.
           - os: macos-14
             arch: arm64
           # Windows support is deferred — the bundled libdatachannel
@@ -96,7 +97,7 @@ jobs:
           CIBW_BEFORE_ALL_MACOS: "brew install openssl@3"
           CIBW_ENVIRONMENT_MACOS: >-
             OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
-            MACOSX_DEPLOYMENT_TARGET=11.0
+            MACOSX_DEPLOYMENT_TARGET=14.0
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio"
           CIBW_TEST_COMMAND: "pytest {project}/tests -q"
           # Skip tests on macOS runners — loopback UDP perms aren't
