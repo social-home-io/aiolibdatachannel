@@ -55,7 +55,7 @@ scripts that negotiate over stdin/stdout.
 ## Development
 
 ```bash
-git clone --recursive https://github.com/pvizeli/aiolibdatachannel.git
+git clone --recursive https://github.com/social-home-io/aiolibdatachannel.git
 cd aiolibdatachannel
 pip install -e .[dev]
 pytest

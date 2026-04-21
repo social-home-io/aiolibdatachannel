@@ -38,8 +38,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pvizeli/aiolibdatachannel"
-Issues = "https://github.com/pvizeli/aiolibdatachannel/issues"
+Homepage = "https://github.com/social-home-io/aiolibdatachannel"
+Issues = "https://github.com/social-home-io/aiolibdatachannel/issues"
 "libdatachannel" = "https://github.com/paullouisageneau/libdatachannel"
 
 [tool.scikit-build]
