@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Self
+from typing import Any, Self, TypeVar
 
 from . import _core
 from ._loop import FutureSlot, schedule
@@ -17,6 +17,8 @@ from .enums import GatheringState, ICEState, RTCState, SignalingState
 from .exceptions import ConnectionClosedError, RTCError
 
 __all__ = ["IceCandidate", "LocalDescription", "PeerConnection"]
+
+_T = TypeVar("_T")
 
 
 @dataclass(slots=True, frozen=True)
@@ -40,6 +42,20 @@ class PeerConnection:
 
     Must be instantiated from within a running asyncio loop; the loop is
     captured at construction time and used to marshal all native callbacks.
+
+    Lifecycle:
+
+    * :meth:`close` (sync) — trigger shutdown and return immediately.
+    * :meth:`aclose` (async) — trigger shutdown *and* wait for it to
+      complete (spawned tasks drained, native handle released).
+    * :meth:`wait_closed` (async) — observe another coroutine's shutdown
+      without triggering it.
+    * :attr:`closed` — boolean property.
+
+    Tasks the caller needs the PC to manage (e.g. ICE-candidate forwarding
+    pumps) should be registered with :meth:`spawn_task` — they get
+    cancelled and awaited during :meth:`aclose` so consumers don't have
+    to bookkeep them by hand.
     """
 
     def __init__(self, config: RTCConfiguration | None = None) -> None:
@@ -70,12 +86,17 @@ class PeerConnection:
         self._state_events[RTCState.NEW].set()
 
         self._ice_candidates: asyncio.Queue[IceCandidate | None] = asyncio.Queue()
-        self._incoming_dc: asyncio.Queue[DataChannel] = asyncio.Queue()
+        self._incoming_dc: asyncio.Queue[DataChannel | None] = asyncio.Queue()
 
         # Keep references to DataChannel wrappers so user-provided ones are
         # not garbage-collected while the native handle is still live.
         self._data_channels: list[DataChannel] = []
-        self._closed = False
+
+        # Lifecycle machinery.
+        self._closed: bool = False
+        self._closed_event: asyncio.Event = asyncio.Event()
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._teardown_task: asyncio.Task[None] | None = None
 
         # Wire up native callbacks.
         self._native.set_on_local_description(self._cb_local_description)
@@ -159,6 +180,11 @@ class PeerConnection:
     @property
     def signaling_state(self) -> SignalingState:
         return self._signaling_state
+
+    @property
+    def closed(self) -> bool:
+        """True once :meth:`close` or :meth:`aclose` has been called."""
+        return self._closed
 
     async def wait_for_state(self, state: RTCState) -> None:
         """Block until the PeerConnection reaches ``state``."""
@@ -269,43 +295,147 @@ class PeerConnection:
         return dc
 
     def incoming_data_channels(self) -> AsyncIterator[DataChannel]:
-        """Async iterator over remotely-initiated DataChannels."""
+        """Async iterator over remotely-initiated DataChannels.
+
+        Terminates cleanly when the PeerConnection is closed — consumer
+        code can write a plain ``async for`` without any defensive
+        cancellation.
+        """
 
         return self._iter_incoming()
 
     async def _iter_incoming(self) -> AsyncIterator[DataChannel]:
-        while not self._closed:
+        while True:
             dc = await self._incoming_dc.get()
+            if dc is None:
+                # Re-inject so every concurrent consumer also sees close.
+                with contextlib.suppress(asyncio.QueueFull):
+                    self._incoming_dc.put_nowait(None)
+                return
             yield dc
 
     async def accept_data_channel(self) -> DataChannel:
-        """Await the next remotely-initiated DataChannel."""
+        """Await the next remotely-initiated DataChannel.
 
-        return await self._incoming_dc.get()
-
-    async def ice_candidates(self) -> AsyncIterator[IceCandidate]:
-        """Async iterator over locally-gathered ICE candidates.
-
-        Terminates when ICE gathering completes or the connection closes.
+        Raises :class:`ConnectionClosedError` if the PeerConnection is
+        closed before one arrives.
         """
 
+        dc = await self._incoming_dc.get()
+        if dc is None:
+            with contextlib.suppress(asyncio.QueueFull):
+                self._incoming_dc.put_nowait(None)
+            raise ConnectionClosedError("peer connection closed before a data channel arrived")
+        return dc
+
+    def ice_candidates(self) -> AsyncIterator[IceCandidate]:
+        """Async iterator over locally-gathered ICE candidates.
+
+        Terminates cleanly when gathering reaches
+        :attr:`GatheringState.COMPLETE` *or* the PeerConnection is
+        closed — ``async for`` without any defensive cancellation on the
+        caller's side.
+        """
+
+        return self._iter_ice_candidates()
+
+    async def _iter_ice_candidates(self) -> AsyncIterator[IceCandidate]:
         while True:
             cand = await self._ice_candidates.get()
             if cand is None:
+                with contextlib.suppress(asyncio.QueueFull):
+                    self._ice_candidates.put_nowait(None)
                 return
             yield cand
 
+    # ---- Task ownership --------------------------------------------------
+
+    def spawn_task(self, coro: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
+        """Schedule ``coro`` as a task owned by this PeerConnection.
+
+        Owned tasks are cancelled and awaited during :meth:`aclose`, so
+        the caller doesn't have to track helper tasks (e.g. ICE forwarding
+        pumps) by hand.
+
+        Raises :class:`ConnectionClosedError` if the PC is already closed.
+        """
+
+        if self._closed:
+            coro.close()
+            raise ConnectionClosedError("peer connection is closed")
+        task = self._loop.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
     # ---- Lifecycle ------------------------------------------------------
 
-    async def close(self) -> None:
-        """Close the connection and release all native resources."""
+    def close(self) -> None:
+        """Trigger shutdown without waiting for it.
+
+        Wakes up every public iterator (via sentinel), cancels tasks
+        registered with :meth:`spawn_task`, and schedules the native
+        teardown on the event loop. For a shutdown *barrier* that waits
+        until that has all finished, use :meth:`aclose`.
+
+        Safe to call multiple times; subsequent calls are no-ops.
+        """
 
         if self._closed:
             return
         self._closed = True
-        for dc in self._data_channels:
-            dc._destroy()
-        await self._loop.run_in_executor(None, self._native.destroy)
+
+        # Wake up any iterator that's blocked on queue.get() right now,
+        # synchronously, so consumer tasks can exit on their next step
+        # without having to wait for the native state-change callback.
+        with contextlib.suppress(asyncio.QueueFull):
+            self._ice_candidates.put_nowait(None)
+        with contextlib.suppress(asyncio.QueueFull):
+            self._incoming_dc.put_nowait(None)
+
+        # Cancel any helper tasks the user registered. Tasks driven by our
+        # own iterators will finish naturally from the sentinels above;
+        # cancel is belt-and-braces for tasks doing other things.
+        for task in list(self._tasks):
+            task.cancel()
+
+        # Drive the blocking teardown steps off a background task; aclose
+        # (or __aexit__) awaits the completion event.
+        self._teardown_task = self._loop.create_task(self._teardown())
+
+    async def _teardown(self) -> None:
+        try:
+            if self._tasks:
+                # Snapshot: the set mutates via add_done_callback.
+                await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            for dc in self._data_channels:
+                dc._destroy()
+            await self._loop.run_in_executor(None, self._native.destroy)
+        finally:
+            self._closed_event.set()
+
+    async def aclose(self) -> None:
+        """Close and wait for teardown to complete.
+
+        Triggers shutdown (if not already triggered), then awaits the
+        completion of all spawned tasks and the native handle destroy.
+        Safe to call concurrently: multiple awaiters all return when the
+        first call's teardown finishes.
+        """
+
+        if not self._closed:
+            self.close()
+        await self._closed_event.wait()
+
+    async def wait_closed(self) -> None:
+        """Block until this PeerConnection's teardown is complete.
+
+        Unlike :meth:`aclose`, this does *not* itself trigger close — it
+        just observes another coroutine's shutdown. Returns immediately
+        if the PC is already fully closed.
+        """
+
+        await self._closed_event.wait()
 
     async def __aenter__(self) -> Self:
         return self
@@ -316,4 +446,4 @@ class PeerConnection:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        await self.close()
+        await self.aclose()

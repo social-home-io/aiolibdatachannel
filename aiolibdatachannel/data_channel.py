@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
+from typing import Any, TypeVar
 
 from . import _core
 from ._loop import FutureSlot, schedule
@@ -13,6 +14,7 @@ from .exceptions import ConnectionClosedError, RTCError
 __all__ = ["DataChannel"]
 
 _CLOSED_SENTINEL: object = object()
+_T = TypeVar("_T")
 
 
 class DataChannel:
@@ -21,6 +23,17 @@ class DataChannel:
     Instances are not created directly — obtain them from
     :meth:`aiolibdatachannel.PeerConnection.create_data_channel` or from
     the ``incoming_data_channels`` async iterator on a PeerConnection.
+
+    Lifecycle mirrors :class:`PeerConnection`:
+
+    * :meth:`close` (sync) — trigger shutdown and return immediately.
+    * :meth:`aclose` (async) — trigger shutdown *and* wait for it to
+      complete (spawned tasks drained, native handle released).
+    * :meth:`wait_closed` (async) — observe another coroutine's shutdown
+      without triggering it.
+    * :attr:`closed` — True once :meth:`close`/:meth:`aclose` has been
+      called (vs. :attr:`is_closed` which reflects the underlying SCTP
+      stream state).
     """
 
     def __init__(
@@ -33,6 +46,7 @@ class DataChannel:
         self._loop = loop
         self._native = _core.DataChannel(handle)
         self._destroyed = False
+        self._close_requested = False
         self._open_slot: FutureSlot[None] = FutureSlot(loop)
         self._closed_slot: FutureSlot[None] = FutureSlot(loop)
         self._buffered_low_event = asyncio.Event()
@@ -41,6 +55,8 @@ class DataChannel:
             maxsize=recv_buffer,
         )
         self._last_error: str | None = None
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._teardown_task: asyncio.Task[None] | None = None
 
         # Register native callbacks. Each trampoline runs on a libdatachannel
         # worker thread with the GIL held; we marshal onto the loop.
@@ -125,11 +141,18 @@ class DataChannel:
 
     @property
     def is_open(self) -> bool:
+        """Reflects libdatachannel's view of the underlying stream state."""
         return self._native.is_open()
 
     @property
     def is_closed(self) -> bool:
+        """Reflects libdatachannel's view of the underlying stream state."""
         return self._native.is_closed()
+
+    @property
+    def closed(self) -> bool:
+        """True once :meth:`close` or :meth:`aclose` has been called."""
+        return self._close_requested
 
     def set_buffered_amount_low_threshold(self, amount: int) -> None:
         """Emit ``buffered_amount_low`` when the send buffer drops below ``amount``."""
@@ -142,7 +165,11 @@ class DataChannel:
         await self._open_slot.future
 
     async def wait_closed(self) -> None:
-        """Resolve once the channel has been closed."""
+        """Block until this channel's teardown is complete.
+
+        Observer-only: does not itself trigger close. Returns
+        immediately if the channel is already closed.
+        """
 
         await self._closed_slot.future
 
@@ -193,14 +220,79 @@ class DataChannel:
             except ConnectionClosedError:
                 return
 
-    async def close(self) -> None:
-        """Close the channel gracefully and release native resources."""
+    # ---- Task ownership -------------------------------------------------
 
-        await self._loop.run_in_executor(None, self._native.close)
+    def spawn_task(self, coro: Coroutine[Any, Any, _T]) -> asyncio.Task[_T]:
+        """Schedule ``coro`` as a task owned by this DataChannel.
+
+        Owned tasks are cancelled and awaited during :meth:`aclose`, so
+        drain pumps don't have to be tracked by the caller. Raises
+        :class:`ConnectionClosedError` if the channel is already closed.
+        """
+
+        if self._close_requested:
+            coro.close()
+            raise ConnectionClosedError("channel is closed")
+        task = self._loop.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    # ---- Lifecycle ------------------------------------------------------
+
+    def close(self) -> None:
+        """Trigger shutdown without waiting for it.
+
+        Wakes up readers via the recv-queue sentinel, cancels tasks
+        registered with :meth:`spawn_task`, and schedules native
+        teardown. Use :meth:`aclose` to wait for teardown to finish.
+
+        Safe to call multiple times.
+        """
+
+        if self._close_requested:
+            return
+        self._close_requested = True
+
+        # Push the close sentinel immediately so anyone blocked on
+        # recv()/async-for wakes up without needing the native callback.
+        with contextlib.suppress(asyncio.QueueFull):
+            self._recv_queue.put_nowait(_CLOSED_SENTINEL)
+
+        for task in list(self._tasks):
+            task.cancel()
+
+        self._teardown_task = self._loop.create_task(self._teardown())
+
+    async def _teardown(self) -> None:
+        try:
+            if self._tasks:
+                await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            # _destroy handles both the native teardown and the sentinel
+            # re-push (idempotent).
+            self._destroy()
+        finally:
+            if not self._closed_slot.future.done():
+                self._closed_slot.set(None)
+
+    async def aclose(self) -> None:
+        """Close and wait for teardown to complete.
+
+        Triggers shutdown (if not already triggered), then awaits the
+        completion of spawned tasks and the native handle destroy.
+        Safe to call concurrently.
+        """
+
+        if not self._close_requested:
+            self.close()
         await self._closed_slot.future
 
     def _destroy(self) -> None:
-        """Force-release the native handle. Called by the owning PeerConnection."""
+        """Force-release the native handle. Called by the owning PeerConnection.
+
+        Also called from :meth:`_teardown` so a caller can drive their
+        own teardown.
+        """
 
         if self._destroyed:
             return

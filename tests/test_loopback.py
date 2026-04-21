@@ -1,7 +1,10 @@
 """End-to-end: two PeerConnections negotiating over localhost.
 
-We drive trickle-ICE manually between two PCs in the same process, open a
-DataChannel, exchange a handful of messages, and assert clean shutdown.
+Drives trickle-ICE manually between two PCs in the same process, opens
+a DataChannel, exchanges a handful of messages, and asserts clean
+shutdown. The ICE-candidate forwarding pumps are registered via
+``pc.spawn_task`` so ``async with``'s exit (``aclose``) tears them
+down without manual cancellation bookkeeping.
 """
 
 from __future__ import annotations
@@ -18,14 +21,11 @@ from aiolibdatachannel import (
 )
 
 
-async def _glue(a: PeerConnection, b: PeerConnection) -> asyncio.Task[None]:
-    """Forward ICE candidates from ``a`` to ``b`` as they are gathered."""
+async def _forward(src: PeerConnection, dst: PeerConnection) -> None:
+    """Drain ICE candidates from ``src`` into ``dst`` until gathering ends."""
 
-    async def pump() -> None:
-        async for cand in a.ice_candidates():
-            await b.add_remote_candidate(cand.candidate, cand.mid)
-
-    return asyncio.create_task(pump())
+    async for cand in src.ice_candidates():
+        await dst.add_remote_candidate(cand.candidate, cand.mid)
 
 
 @pytest.mark.asyncio
@@ -33,8 +33,8 @@ async def test_loopback_datachannel() -> None:
     cfg = RTCConfiguration()  # no STUN — host candidates are enough on loopback
     async with PeerConnection(cfg) as offerer, PeerConnection(cfg) as answerer:
         offerer_dc = await offerer.create_data_channel("chat")
-        pump_a = await _glue(offerer, answerer)
-        pump_b = await _glue(answerer, offerer)
+        offerer.spawn_task(_forward(offerer, answerer))
+        answerer.spawn_task(_forward(answerer, offerer))
 
         offer = await offerer.set_local_description("offer")
         await answerer.set_remote_description(offer.sdp, offer.type)
@@ -54,9 +54,8 @@ async def test_loopback_datachannel() -> None:
         reply = await asyncio.wait_for(offerer_dc.recv(), timeout=5.0)
         assert reply == "pong"
 
-        pump_a.cancel()
-        pump_b.cancel()
-        await asyncio.gather(pump_a, pump_b, return_exceptions=True)
+    # __aexit__ → aclose() terminated the forward() tasks via sentinels +
+    # awaited them. No manual cancel needed.
 
 
 @pytest.mark.asyncio
@@ -71,7 +70,7 @@ async def test_send_after_close_raises() -> None:
 async def test_state_progresses_to_closed() -> None:
     pc = PeerConnection()
     assert pc.state is RTCState.NEW
-    await pc.close()
+    await pc.aclose()
     # After close the handle is destroyed; state should be CLOSED or a
     # terminal state. We give the callback a brief chance to land.
     for _ in range(50):

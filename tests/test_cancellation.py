@@ -18,7 +18,7 @@ async def test_cancel_mid_negotiation() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    await pc.close()
+    await pc.aclose()
 
 
 @pytest.mark.asyncio
