@@ -1,5 +1,5 @@
 [build-system]
-requires = ["scikit-build-core>=0.9", "nanobind>=2.0"]
+requires = ["scikit-build-core>=0.9"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Internet",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = ["cffi>=1.16"]
 
 [project.optional-dependencies]
 dev = [
@@ -47,7 +47,9 @@ minimum-version = "0.9"
 build-dir = "build/{wheel_tag}"
 cmake.version = ">=3.24"
 ninja.make-fallback = true
-wheel.py-api = "cp312"
+# py3-none-<platform>: no Python-version-specific code in our wheel, just a
+# shared lib. cffi talks to it at runtime via the stable C ABI.
+wheel.py-api = "py3"
 wheel.packages = ["src/aiolibdatachannel"]
 
 # Rebuild editable installs on-demand when sources change.
@@ -98,6 +100,16 @@ python_version = "3.12"
 strict = true
 mypy_path = ["src"]
 packages = ["aiolibdatachannel"]
+
+# cffi doesn't ship type stubs; we lean on its runtime dispatch.
+[[tool.mypy.overrides]]
+module = ["cffi", "cffi.*"]
+ignore_missing_imports = true
+
+# The FFI callback decorators and string lookups return Any — let it.
+[[tool.mypy.overrides]]
+module = "aiolibdatachannel._core"
+disable_error_code = ["misc", "no-any-return", "untyped-decorator"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError, version
 
-from . import _aiolibdatachannel as _core
+from . import _core
 from .config import DataChannelOptions, RTCConfiguration
 from .data_channel import DataChannel
 from .enums import (

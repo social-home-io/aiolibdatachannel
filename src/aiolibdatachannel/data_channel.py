@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
-from . import _aiolibdatachannel as _core
+from . import _core
 from ._loop import FutureSlot, schedule
 from .exceptions import ConnectionClosedError, RTCError
 

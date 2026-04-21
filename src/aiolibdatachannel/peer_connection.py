@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import Self
 
-from . import _aiolibdatachannel as _core
+from . import _core
 from ._loop import FutureSlot, schedule
 from .config import DataChannelOptions, RTCConfiguration
 from .data_channel import DataChannel

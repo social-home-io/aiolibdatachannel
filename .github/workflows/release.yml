@@ -57,7 +57,9 @@ jobs:
       - uses: pypa/cibuildwheel@v2.21
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
-          # abi3 wheel — compile once on 3.12, runs on 3.12+.
+          # The wheel is Python-version-independent (cffi dispatch, no C
+          # extension). Build once per (os, arch); cibuildwheel still wants
+          # a concrete interpreter to drive the build, so we pick 3.12.
           CIBW_BUILD: "cp312-*"
           CIBW_SKIP: "*-musllinux_*"
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28

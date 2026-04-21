@@ -6,25 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# --- Python + nanobind ------------------------------------------------------
-if(NOT DEFINED Python_EXECUTABLE AND DEFINED PYTHON_EXECUTABLE)
-    set(Python_EXECUTABLE "${PYTHON_EXECUTABLE}")
-endif()
-
-find_package(Python 3.12 REQUIRED
-    COMPONENTS Interpreter Development.Module Development.SABIModule)
-
-execute_process(
-    COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    OUTPUT_VARIABLE NB_CMAKE_DIR
-)
-list(APPEND CMAKE_PREFIX_PATH "${NB_CMAKE_DIR}")
-find_package(nanobind CONFIG REQUIRED)
-
 # --- libdatachannel configuration -------------------------------------------
-# Set options BEFORE add_subdirectory so libdatachannel picks them up.
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+# Build libdatachannel as a shared library that cffi loads at runtime.
+# Dependencies (usrsctp, libjuice, openssl) link statically into it so the
+# wheel ships a single self-contained `.so` / `.dylib` / `.dll`.
+set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
 set(NO_TESTS ON CACHE BOOL "" FORCE)
 set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
@@ -38,26 +24,22 @@ if(NOT DEFINED USE_MBEDTLS AND NOT DEFINED USE_GNUTLS)
     set(USE_GNUTLS OFF CACHE BOOL "" FORCE)
 endif()
 
-add_subdirectory(vendor/libdatachannel EXCLUDE_FROM_ALL)
+add_subdirectory(vendor/libdatachannel)
 
-# --- Python extension module ------------------------------------------------
-nanobind_add_module(
-    _aiolibdatachannel
-    STABLE_ABI
-    NB_STATIC
-    src/_aiolibdatachannel/bindings.cpp
-)
+# --- Ship the shared library inside the Python package ----------------------
+# The LibDataChannel shared target already encodes the correct versioned
+# soname. scikit-build-core will place the installed files under the package
+# directory in the built wheel.
+install(TARGETS datachannel
+    LIBRARY DESTINATION aiolibdatachannel/_lib
+    RUNTIME DESTINATION aiolibdatachannel/_lib)
 
-target_link_libraries(_aiolibdatachannel PRIVATE LibDataChannel::LibDataChannelStatic)
-
-target_compile_definitions(_aiolibdatachannel PRIVATE RTC_STATIC)
-
-if(MSVC)
-    target_compile_options(_aiolibdatachannel PRIVATE /W3 /permissive-)
-else()
-    target_compile_options(_aiolibdatachannel PRIVATE -Wall -Wextra -Wno-unused-parameter)
+# Set rpath so the shared lib can find its transitive deps (none in our
+# static-deps layout, but future-proofing in case we ever flip one to shared).
+if(APPLE)
+    set_target_properties(datachannel PROPERTIES
+        INSTALL_RPATH "@loader_path")
+elseif(UNIX)
+    set_target_properties(datachannel PROPERTIES
+        INSTALL_RPATH "$ORIGIN")
 endif()
-
-install(TARGETS _aiolibdatachannel LIBRARY DESTINATION aiolibdatachannel)
-install(FILES src/aiolibdatachannel/_aiolibdatachannel.pyi
-        DESTINATION aiolibdatachannel)

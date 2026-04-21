@@ -125,8 +125,10 @@ Release wheels are produced by `.github/workflows/release.yml` using
 | macOS | x86_64 + arm64 |
 | Windows | AMD64 |
 
-All wheels are built for CPython's **Stable ABI (abi3) 3.12**, so a single
-wheel per `(os, arch)` covers Python 3.12, 3.13, 3.14, and onwards.
+Wheels ship the Python source as-is plus the bundled
+`libdatachannel.{so,dylib,dll}`; cffi loads it at runtime. A single
+`py3-none-<platform>` wheel per `(os, arch)` covers every supported
+Python interpreter — no per-version build or stable-ABI tagging needed.
 
 ## Troubleshooting
 
