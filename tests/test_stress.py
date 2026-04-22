@@ -35,7 +35,6 @@ import subprocess
 import sys
 import textwrap
 import time
-from pathlib import Path
 
 import pytest
 
@@ -225,10 +224,12 @@ def test_stress_shutdown_has_no_leak_warnings() -> None:
     shows up at any size. The pure ``stress`` test above runs the full
     10k-message workload.
     """
-    repo_root = Path(__file__).parent.parent
+    # Subprocess inherits the parent's sys.path — deliberately do NOT set
+    # PYTHONPATH to the source tree, which would shadow an installed
+    # wheel's ``_native`` extension and fail with ImportError. See the
+    # matching comment in tests/test_shutdown_hygiene.py::_run.
     env = dict(os.environ)
     env["AIOLIB_REQUIRE_NATIVE"] = "1"
-    env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
 
     script = textwrap.dedent(
         """
