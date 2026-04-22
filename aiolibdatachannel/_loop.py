@@ -58,8 +58,17 @@ class FutureSlot[T]:
             self._future.set_result(value)
 
     def fail(self, exc: BaseException) -> None:
-        if not self._future.done():
-            self._future.set_exception(exc)
+        if self._future.done():
+            return
+        self._future.set_exception(exc)
+        # Mark the exception as retrieved so a slot that's never awaited
+        # (e.g. a DataChannel that's created then immediately torn down
+        # inside ``async with PeerConnection``) doesn't trip Python's
+        # "Future exception was never retrieved" warning at GC time.
+        # Legitimate awaiters still get the exception raised to them via
+        # ``__await__``; this callback runs first but only reads the
+        # stored exception, which is non-destructive.
+        self._future.add_done_callback(_retrieve_exception)
 
     def reset(self) -> None:
         if not self._future.done():
@@ -68,3 +77,15 @@ class FutureSlot[T]:
 
     def __await__(self):  # type: ignore[no-untyped-def]
         return self._future.__await__()
+
+
+def _retrieve_exception(future: asyncio.Future[Any]) -> None:
+    """Done-callback that marks a failed future's exception as retrieved.
+
+    Reads ``future.exception()`` (which flips the internal retrieval flag)
+    and ignores the value. Handles the cancelled case — ``.exception()``
+    raises :class:`asyncio.CancelledError` on a cancelled future, which
+    is not what we want to propagate here.
+    """
+    with contextlib.suppress(asyncio.CancelledError):
+        future.exception()
