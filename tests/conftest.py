@@ -33,24 +33,45 @@ if not _REQUIRE_NATIVE:
 import pytest  # noqa: E402
 
 
+_RUN_STRESS = bool(os.environ.get("AIOLIB_STRESS"))
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item],
 ) -> None:
-    """Filter ``@pytest.mark.native`` tests when the fake is active.
+    """Filter ``@pytest.mark.native`` tests when the fake is active, and
+    ``@pytest.mark.stress`` tests unless explicitly opted in.
 
-    The fake can't make a real DTLS handshake, so loopback / cancellation
-    tests that actually negotiate get skipped unless the caller set
-    ``AIOLIB_REQUIRE_NATIVE=1``.
+    * The fake can't make a real DTLS handshake → native tests get
+      skipped unless the caller set ``AIOLIB_REQUIRE_NATIVE=1``.
+    * Stress tests take 10s+ each and we don't want to pay that on
+      every fast-feedback run → skipped unless
+      ``AIOLIB_STRESS=1`` is set or pytest was invoked with
+      ``-m stress`` (in which case pytest's own marker filter takes
+      over and we don't add our skip on top).
     """
-    if _REQUIRE_NATIVE:
-        return
     skip_native = pytest.mark.skip(
         reason="requires real _native extension "
         "(run with AIOLIB_REQUIRE_NATIVE=1)",
     )
+    skip_stress = pytest.mark.skip(
+        reason="stress test — run with AIOLIB_STRESS=1 "
+        "(or 'pytest -m stress')",
+    )
+    # If the user already passed ``-m stress`` pytest deselects everything
+    # else for us; we only need to auto-skip when stress isn't the
+    # explicit selection.
+    marker_expr = config.getoption("-m", default="")
+    stress_explicitly_requested = "stress" in marker_expr
     for item in items:
-        if item.get_closest_marker("native") is not None:
+        if not _REQUIRE_NATIVE and item.get_closest_marker("native") is not None:
             item.add_marker(skip_native)
+        if (
+            not _RUN_STRESS
+            and not stress_explicitly_requested
+            and item.get_closest_marker("stress") is not None
+        ):
+            item.add_marker(skip_stress)
 
 
 @pytest.fixture(autouse=True)

@@ -98,7 +98,15 @@ jobs:
             OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
             MACOSX_DEPLOYMENT_TARGET=14.0
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio"
-          CIBW_TEST_COMMAND: "AIOLIB_REQUIRE_NATIVE=1 pytest {project}/tests -q"
+          # Release wheels run the full smoke suite AND the stress
+          # suite — catching a slow leak or a transport regression at
+          # build time is cheap compared to shipping a broken wheel.
+          # Stress adds ~90 s per (os, arch); fine for a release run,
+          # too expensive for every PR (see CI workflow's gated
+          # tests-stress job for the per-PR opt-in).
+          CIBW_TEST_COMMAND: >-
+            AIOLIB_REQUIRE_NATIVE=1 AIOLIB_STRESS=1
+            pytest {project}/tests -v
           # Skip tests on macOS runners — loopback UDP perms aren't
           # reliable on hosted macOS. Linux wheel tests run the full suite.
           CIBW_TEST_SKIP: "*-macosx_*"

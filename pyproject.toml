@@ -147,4 +147,5 @@ asyncio_mode = "auto"
 addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
     "native: test requires the compiled aiolibdatachannel._native extension (real libdatachannel handshake, not the in-memory fake)",
+    "stress: long-running soak test (10s+); skipped by default, run with 'pytest -m stress' or via AIOLIB_STRESS=1",
 ]
