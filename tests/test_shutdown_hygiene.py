@@ -25,7 +25,6 @@ import os
 import subprocess
 import sys
 import textwrap
-from pathlib import Path
 
 import pytest
 
@@ -35,13 +34,17 @@ pytestmark = pytest.mark.native
 def _run(script: str, *, timeout: float = 20.0) -> subprocess.CompletedProcess[str]:
     """Run a Python snippet in a subprocess under ``-X dev`` and return
     its CompletedProcess, merging stderr into stdout so we can grep both.
+
+    The subprocess inherits the parent's ``sys.path`` (via the default
+    behaviour of ``sys.executable``): in local dev that's the editable
+    install, in cibuildwheel's test pass that's the venv with the
+    installed wheel. We deliberately do NOT set ``PYTHONPATH`` to the
+    source tree — on an installed wheel that would shadow the real
+    package with the source checkout, which doesn't contain the
+    compiled ``_native`` extension and fails with ``ImportError``.
     """
-    repo_root = Path(__file__).parent.parent
     env = dict(os.environ)
     env["AIOLIB_REQUIRE_NATIVE"] = "1"
-    # Put the repo on PYTHONPATH so the in-tree wrapper is imported; the
-    # compiled ``_native`` extension is still resolved from site-packages.
-    env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
     return subprocess.run(
         [sys.executable, "-X", "dev", "-c", textwrap.dedent(script)],
         env=env,
