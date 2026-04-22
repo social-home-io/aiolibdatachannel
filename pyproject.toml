@@ -46,6 +46,13 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
+    # Needed by scikit-build-core's editable-mode rebuild, which runs
+    # cmake in the host environment (not the isolated build venv) when
+    # sources change. Without this, ``pip install -e ".[dev]"`` works
+    # the first time but any source edit triggers
+    # ``Could not locate nanobind's CMake package`` on the next
+    # pytest run.
+    "nanobind>=2.1",
 ]
 
 [project.urls]
