@@ -16,6 +16,9 @@ from aiolibdatachannel import (
     StateChangeEvent,
 )
 
+# Real libdatachannel behaviour required (DTLS / ICE / state machine).
+pytestmark = pytest.mark.native
+
 _TIMEOUT = 10.0
 
 

@@ -23,6 +23,7 @@ def _reset_logger() -> None:
     init_logger(LogLevel.NONE, None)
 
 
+@pytest.mark.native
 @pytest.mark.asyncio
 async def test_python_logger_receives_records(caplog: pytest.LogCaptureFixture) -> None:
     logger = logging.getLogger("aiolibdatachannel.test")

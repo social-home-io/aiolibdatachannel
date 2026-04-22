@@ -7,6 +7,10 @@ import pytest
 from aiolibdatachannel import PeerConnection, RTCError
 
 
+
+# Real libdatachannel behaviour required (DTLS / ICE / state machine).
+pytestmark = pytest.mark.native
+
 @pytest.mark.asyncio
 async def test_invalid_remote_description_raises() -> None:
     async with PeerConnection() as pc:

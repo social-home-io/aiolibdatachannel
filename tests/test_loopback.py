@@ -20,6 +20,9 @@ from aiolibdatachannel import (
     RTCState,
 )
 
+# Real libdatachannel behaviour required (DTLS / ICE / state machine).
+pytestmark = pytest.mark.native
+
 
 async def _forward(src: PeerConnection, dst: PeerConnection) -> None:
     """Drain ICE candidates from ``src`` into ``dst`` until gathering ends."""
