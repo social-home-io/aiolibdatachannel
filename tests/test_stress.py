@@ -29,6 +29,7 @@ What's covered:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
@@ -57,7 +58,8 @@ async def _forward(src: PeerConnection, dst: PeerConnection) -> None:
 
 
 async def _negotiate(
-    offerer: PeerConnection, answerer: PeerConnection,
+    offerer: PeerConnection,
+    answerer: PeerConnection,
 ) -> None:
     """Full trickle-ICE negotiation between two local PCs."""
     offer = await offerer.set_local_description("offer")
@@ -113,13 +115,18 @@ async def test_loopback_ten_thousand_messages() -> None:
 
         await _negotiate(offerer, answerer)
         incoming = await asyncio.wait_for(
-            answerer.accept_data_channel(), timeout=10.0,
+            answerer.accept_data_channel(),
+            timeout=10.0,
         )
         await asyncio.wait_for(offerer_dc.wait_open(), timeout=10.0)
         await asyncio.wait_for(incoming.wait_open(), timeout=10.0)
 
         async def _round_trip(
-            tx, rx, *, tag: str, start: int,
+            tx,
+            rx,
+            *,
+            tag: str,
+            start: int,
         ) -> list[int]:
             async def produce() -> None:
                 for i in range(start, start + BATCH_SIZE):
@@ -144,12 +151,14 @@ async def test_loopback_ten_thousand_messages() -> None:
             o2a, a2o = await asyncio.wait_for(
                 asyncio.gather(
                     _round_trip(
-                        offerer_dc, incoming,
+                        offerer_dc,
+                        incoming,
                         tag="o2a",
                         start=batch * BATCH_SIZE,
                     ),
                     _round_trip(
-                        incoming, offerer_dc,
+                        incoming,
+                        offerer_dc,
                         tag="a2o",
                         start=batch * BATCH_SIZE,
                     ),
@@ -171,9 +180,7 @@ async def test_loopback_ten_thousand_messages() -> None:
         )
         # Sanity: a sub-100ms run means we didn't actually round-trip
         # through libdatachannel — probably the wiring is short-circuited.
-        assert elapsed > 0.1, (
-            f"suspiciously fast ({elapsed:.3f}s); are sends real?"
-        )
+        assert elapsed > 0.1, f"suspiciously fast ({elapsed:.3f}s); are sends real?"
 
 
 # ─── Lifecycle churn ─────────────────────────────────────────────────────
@@ -181,7 +188,7 @@ async def test_loopback_ten_thousand_messages() -> None:
 
 @pytest.mark.asyncio
 async def test_hundred_pc_lifecycles_no_handle_exhaustion() -> None:
-    """Bare PC cycling: 100× create + aclose. Each iteration mints a
+    """Bare PC cycling: 100x create + aclose. Each iteration mints a
     fresh handle; if libdatachannel's handle allocator or our registry
     leaked, this would slow down or OOM.
     """
@@ -284,15 +291,11 @@ def test_stress_shutdown_has_no_leak_warnings() -> None:
         timeout=120.0,
     )
     out = proc.stdout
-    assert proc.returncode == 0, (
-        f"subprocess exited with {proc.returncode}; output:\n{out}"
-    )
+    assert proc.returncode == 0, f"subprocess exited with {proc.returncode}; output:\n{out}"
     assert "nanobind:" not in out.lower() or "leaked" not in out.lower(), (
         f"nanobind leak message:\n{out}"
     )
-    assert "Future exception was never retrieved" not in out, (
-        f"un-retrieved future:\n{out}"
-    )
+    assert "Future exception was never retrieved" not in out, f"un-retrieved future:\n{out}"
 
 
 # ─── Cancellation under load ─────────────────────────────────────────────
@@ -313,7 +316,8 @@ async def test_cancel_during_high_volume_send_is_clean() -> None:
         answerer.spawn_task(_forward(answerer, offerer))
         await _negotiate(offerer, answerer)
         incoming = await asyncio.wait_for(
-            answerer.accept_data_channel(), timeout=10.0,
+            answerer.accept_data_channel(),
+            timeout=10.0,
         )
         await asyncio.wait_for(dc.wait_open(), timeout=10.0)
         await asyncio.wait_for(incoming.wait_open(), timeout=10.0)
@@ -330,7 +334,5 @@ async def test_cancel_during_high_volume_send_is_clean() -> None:
         flooder = asyncio.create_task(flood())
         await asyncio.sleep(0.05)
         flooder.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await flooder
-        except asyncio.CancelledError:
-            pass

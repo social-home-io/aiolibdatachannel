@@ -15,7 +15,6 @@ import pytest
 
 from aiolibdatachannel import GatheringState, IceCandidate, PeerConnection
 
-
 # Real libdatachannel behaviour required (DTLS / ICE / state machine).
 pytestmark = pytest.mark.native
 

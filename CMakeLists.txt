@@ -27,9 +27,26 @@ endif()
 add_subdirectory(vendor/libdatachannel)
 
 # --- nanobind extension -----------------------------------------------------
-# Locate the nanobind CMake package that ships with the pip-installed
-# ``nanobind`` wheel. scikit-build-core puts it on the CMAKE_PREFIX_PATH.
+# scikit-build-core runs this file inside a build-isolation venv that has
+# ``nanobind`` installed (per [build-system].requires in pyproject.toml),
+# but doesn't automatically add nanobind's CMake config dir to
+# CMAKE_PREFIX_PATH. Canonical workaround: ask the wheel where its
+# CMake package lives via ``python -m nanobind --cmake_dir``.
 find_package(Python 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
+
+execute_process(
+    COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE NB_DIR
+    RESULT_VARIABLE NB_DIR_RESULT
+)
+if(NOT NB_DIR_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "Could not locate nanobind's CMake package via "
+        "'${Python_EXECUTABLE} -m nanobind --cmake_dir'. Is nanobind "
+        "installed in this Python environment?")
+endif()
+list(APPEND CMAKE_PREFIX_PATH "${NB_DIR}")
 find_package(nanobind CONFIG REQUIRED)
 
 nanobind_add_module(

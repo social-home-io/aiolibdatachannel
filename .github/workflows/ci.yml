@@ -57,10 +57,12 @@ jobs:
       - name: Run Python-only tests
         # AIOLIB_REQUIRE_NATIVE is unset → conftest injects the fake
         # ``aiolibdatachannel._native`` module into sys.modules and
-        # deselects @pytest.mark.native tests. The sys.path hack here
-        # works because we never build/install the package; we import
-        # the in-tree ``aiolibdatachannel/`` directly, which is pure
-        # Python once the fake takes over for _native.
+        # deselects @pytest.mark.native tests. PYTHONPATH=. puts the
+        # in-tree ``aiolibdatachannel/`` package on the import path —
+        # we never pip-install (would require a C++ toolchain), we
+        # just let Python resolve the package from the source tree.
+        env:
+          PYTHONPATH: "."
         run: pytest -q -m "not native"
 
   tests-native:

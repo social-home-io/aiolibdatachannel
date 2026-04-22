@@ -36,7 +36,8 @@ from __future__ import annotations
 
 import itertools
 import threading
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # ---- Public enum values (mirror bindings.cpp's CallbackKind) ---------
 
@@ -91,6 +92,7 @@ def _raise_if_injected(ctx: str) -> None:
     except KeyError:
         return
     from aiolibdatachannel.exceptions import RTCError as _Real  # lazy import
+
     raise _Real(f"{ctx}: {msg} ({code})", code=code)
 
 
@@ -355,7 +357,8 @@ def set_buffered_amount_low_threshold(dc: int, amount: int) -> None:
     info = _dcs.get(dc)
     if info is None:
         raise RTCError(
-            "rtcSetBufferedAmountLowThreshold: invalid argument", ERR_INVALID,
+            "rtcSetBufferedAmountLowThreshold: invalid argument",
+            ERR_INVALID,
         )
     info["buffered_amount_low_threshold"] = amount
 

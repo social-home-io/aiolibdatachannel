@@ -58,9 +58,7 @@ def _assert_clean_exit(proc: subprocess.CompletedProcess[str]) -> None:
     variants like ``nanobind: leaked 2 instances!``.
     """
     out = proc.stdout
-    assert proc.returncode == 0, (
-        f"subprocess exit {proc.returncode}; output:\n{out}"
-    )
+    assert proc.returncode == 0, f"subprocess exit {proc.returncode}; output:\n{out}"
     assert "nanobind:" not in out.lower() or "leaked" not in out.lower(), (
         f"nanobind leak message in output:\n{out}"
     )

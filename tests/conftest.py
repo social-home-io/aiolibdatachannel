@@ -26,18 +26,18 @@ if not _REQUIRE_NATIVE:
     _TESTS_DIR = Path(__file__).parent
     if str(_TESTS_DIR) not in sys.path:
         sys.path.insert(0, str(_TESTS_DIR))
-    import _fake_native  # noqa: E402  — injected before aiolibdatachannel
+    import _fake_native
 
     sys.modules["aiolibdatachannel._native"] = _fake_native
 
 import pytest  # noqa: E402
 
-
 _RUN_STRESS = bool(os.environ.get("AIOLIB_STRESS"))
 
 
 def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item],
+    config: pytest.Config,
+    items: list[pytest.Item],
 ) -> None:
     """Filter ``@pytest.mark.native`` tests when the fake is active, and
     ``@pytest.mark.stress`` tests unless explicitly opted in.
@@ -51,12 +51,10 @@ def pytest_collection_modifyitems(
       over and we don't add our skip on top).
     """
     skip_native = pytest.mark.skip(
-        reason="requires real _native extension "
-        "(run with AIOLIB_REQUIRE_NATIVE=1)",
+        reason="requires real _native extension (run with AIOLIB_REQUIRE_NATIVE=1)",
     )
     skip_stress = pytest.mark.skip(
-        reason="stress test — run with AIOLIB_STRESS=1 "
-        "(or 'pytest -m stress')",
+        reason="stress test — run with AIOLIB_STRESS=1 (or 'pytest -m stress')",
     )
     # If the user already passed ``-m stress`` pytest deselects everything
     # else for us; we only need to auto-skip when stress isn't the
@@ -101,8 +99,9 @@ def _reset_fake_native() -> None:
     # Re-register the real dispatcher after reset — _core imported it
     # at module-load time, so after reset() the fake has no dispatcher
     # and callbacks would no-op.
-    import aiolibdatachannel._core as core
     import aiolibdatachannel._native as native
+
+    import aiolibdatachannel._core as core
 
     native.reset()
     native.register_dispatcher(core._dispatch)

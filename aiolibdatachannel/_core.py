@@ -27,8 +27,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from . import _native
-from .exceptions import RTCError
+from . import _native  # type: ignore[attr-defined]  # compiled extension
 
 __all__ = [
     "ERR_FAILURE",
@@ -228,13 +227,15 @@ class PeerConnection:
     # ---- Callback registration ------------------------------------------
 
     def set_on_local_description(
-        self, callback: Callable[[str, str], None],
+        self,
+        callback: Callable[[str, str], None],
     ) -> None:
         self._callbacks["local_description"] = callback
         _native.set_local_description_callback(self._handle, True)
 
     def set_on_local_candidate(
-        self, callback: Callable[[str, str], None],
+        self,
+        callback: Callable[[str, str], None],
     ) -> None:
         self._callbacks["local_candidate"] = callback
         _native.set_local_candidate_callback(self._handle, True)
@@ -248,13 +249,15 @@ class PeerConnection:
         _native.set_ice_state_change_callback(self._handle, True)
 
     def set_on_gathering_state_change(
-        self, callback: Callable[[int], None],
+        self,
+        callback: Callable[[int], None],
     ) -> None:
         self._callbacks["gathering_state_change"] = callback
         _native.set_gathering_state_change_callback(self._handle, True)
 
     def set_on_signaling_state_change(
-        self, callback: Callable[[int], None],
+        self,
+        callback: Callable[[int], None],
     ) -> None:
         self._callbacks["signaling_state_change"] = callback
         _native.set_signaling_state_change_callback(self._handle, True)
@@ -273,7 +276,9 @@ class PeerConnection:
 
     def add_remote_candidate(self, candidate: str, mid: str = "") -> None:
         _native.add_remote_candidate(
-            self._handle, candidate, mid if mid else None,
+            self._handle,
+            candidate,
+            mid if mid else None,
         )
 
     def get_local_description(self) -> str | None:
