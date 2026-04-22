@@ -8,6 +8,9 @@ import pytest
 
 from aiolibdatachannel import PeerConnection
 
+# Real libdatachannel behaviour required (DTLS / ICE / state machine).
+pytestmark = pytest.mark.native
+
 
 @pytest.mark.asyncio
 async def test_cancel_mid_negotiation() -> None:

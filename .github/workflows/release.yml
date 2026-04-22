@@ -83,12 +83,11 @@ jobs:
           SETUPTOOLS_SCM_PRETEND_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           CIBW_ENVIRONMENT_PASS_LINUX: "SETUPTOOLS_SCM_PRETEND_VERSION"
           CIBW_ARCHS: ${{ matrix.arch }}
-          # Our wheel is Python-version-independent (py3-none-<platform>)
-          # because cffi dispatches to the bundled shared library at
-          # runtime. requires-python = ">=3.12" in pyproject.toml gates
-          # installation to 3.12+. cibuildwheel still needs a concrete
-          # Python to drive the build, so we pick 3.12 and emit one wheel
-          # per (os, arch).
+          # Nanobind's stable-ABI mode emits one cp312-abi3-<platform>
+          # wheel per (os, arch) that covers every CPython 3.12+.
+          # requires-python = ">=3.12" in pyproject.toml gates
+          # installation. cibuildwheel builds with 3.12 to produce that
+          # single wheel; the abi3 tag lets pip install it on 3.13+ too.
           CIBW_BUILD: "cp312-*"
           CIBW_SKIP: "*-musllinux_*"
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
@@ -99,7 +98,15 @@ jobs:
             OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
             MACOSX_DEPLOYMENT_TARGET=14.0
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio"
-          CIBW_TEST_COMMAND: "pytest {project}/tests -q"
+          # Release wheels run the full smoke suite AND the stress
+          # suite — catching a slow leak or a transport regression at
+          # build time is cheap compared to shipping a broken wheel.
+          # Stress adds ~90 s per (os, arch); fine for a release run,
+          # too expensive for every PR (see CI workflow's gated
+          # tests-stress job for the per-PR opt-in).
+          CIBW_TEST_COMMAND: >-
+            AIOLIB_REQUIRE_NATIVE=1 AIOLIB_STRESS=1
+            pytest {project}/tests -v
           # Skip tests on macOS runners — loopback UDP perms aren't
           # reliable on hosted macOS. Linux wheel tests run the full suite.
           CIBW_TEST_SKIP: "*-macosx_*"

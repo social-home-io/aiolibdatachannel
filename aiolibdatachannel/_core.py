@@ -1,19 +1,22 @@
-"""Object-oriented wrapper over :mod:`aiolibdatachannel._ffi`.
+"""Object-oriented wrapper over :mod:`aiolibdatachannel._native`.
 
-This module gives the higher-level asyncio wrappers (:mod:`peer_connection`
-/ :mod:`data_channel`) the same imperative surface the old nanobind
-extension exposed, but implemented in pure Python on top of cffi.
+The asyncio shims in :mod:`.peer_connection` and :mod:`.data_channel`
+import ``PeerConnection`` and ``DataChannel`` from here. Those higher
+layers assume an imperative surface modelled on the libdatachannel
+C API — this module provides exactly that.
 
-Design notes:
+Design — carried over from the previous cffi edition, because it's the
+pattern that rules out the reference-cycle leaks that bit the first
+nanobind port:
 
-* Native callback trampolines are registered **once** per callback type at
-  module import time. Each trampoline looks up the owning Python object in
-  a handle→instance dict and dispatches to the user-supplied callable.
-  Nothing on the native side ever holds a strong reference to a Python
-  bound method, which rules out the cycle the nanobind version hit.
-* The registries live in this module (strong refs). Objects are removed
-  when ``destroy()`` is called. An atexit hook tears down anything the
-  caller forgot to close.
+* ``_native`` holds **one** Python reference globally: the dispatcher
+  registered in :func:`_install_dispatcher`. No per-handle Python state
+  lives on the C++ side.
+* Trampolines in the nanobind extension fan into that single dispatcher
+  with a ``CallbackKind`` tag + handle + payload.
+* This module keeps a ``handle → wrapper`` dict (strong refs). When a
+  wrapper is destroyed it removes itself; an ``atexit`` hook sweeps up
+  anything a caller forgot.
 """
 
 from __future__ import annotations
@@ -24,8 +27,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from ._ffi import ffi, lib
-from .exceptions import RTCError
+from . import _native  # type: ignore[attr-defined]  # compiled extension
 
 __all__ = [
     "ERR_FAILURE",
@@ -41,50 +43,18 @@ __all__ = [
     "set_thread_pool_size",
 ]
 
-ERR_SUCCESS = 0
-ERR_INVALID = -1
-ERR_FAILURE = -2
-ERR_NOT_AVAIL = -3
-ERR_TOO_SMALL = -4
-
-_ERR_REASONS = {
-    ERR_INVALID: "invalid argument",
-    ERR_FAILURE: "runtime failure",
-    ERR_NOT_AVAIL: "not available",
-    ERR_TOO_SMALL: "buffer too small",
-}
-
-
-def _check(rc: int, ctx: str) -> int:
-    if rc < 0:
-        reason = _ERR_REASONS.get(rc, "unknown error")
-        raise RTCError(f"{ctx}: {reason} ({rc})", code=rc)
-    return rc
-
-
-def _read_string(
-    handle: int,
-    getter: Callable[[int, Any, int], int],
-    ctx: str,
-) -> str | None:
-    required = getter(handle, ffi.NULL, 0)
-    if required == ERR_NOT_AVAIL:
-        return None
-    _check(required, ctx)
-    if required == 0:
-        return ""
-    buf = ffi.new("char[]", required)
-    rc = getter(handle, buf, required)
-    _check(rc, ctx)
-    # libdatachannel writes a trailing NUL; use ffi.string for safety.
-    return ffi.string(buf, required).decode("utf-8", errors="replace")
+ERR_SUCCESS: int = _native.ERR_SUCCESS
+ERR_INVALID: int = _native.ERR_INVALID
+ERR_FAILURE: int = _native.ERR_FAILURE
+ERR_NOT_AVAIL: int = _native.ERR_NOT_AVAIL
+ERR_TOO_SMALL: int = _native.ERR_TOO_SMALL
 
 
 # ---- Registries ---------------------------------------------------------
 #
 # Flat dicts keyed by libdatachannel's integer handle. Strong refs — the
-# wrapper removes itself on destroy(); whatever's left when the interpreter
-# exits is torn down by :func:`_atexit_destroy_all`.
+# wrapper removes itself on ``destroy()``; whatever's left when the
+# interpreter exits is torn down by :func:`_atexit_destroy_all`.
 
 _pc_lock = threading.Lock()
 _pcs: dict[int, PeerConnection] = {}
@@ -102,194 +72,121 @@ def _lookup_dc(handle: int) -> DataChannel | None:
         return _dcs.get(handle)
 
 
-# ---- Global trampolines -------------------------------------------------
+# ---- Single-dispatcher trampoline ---------------------------------------
 #
-# Each trampoline is a module-level cffi callback. libdatachannel only ever
-# sees these; it never gets a pointer into a Python instance. The trampolines
-# fish the instance out of the registry and fire its stored callback.
+# Libdatachannel calls into _native's C trampolines, which call this
+# function with ``(kind, handle, *payload)``. The dispatch is a flat
+# ``if`` ladder keyed by the CallbackKind enum exported by _native.
+#
+# Anything raised here is converted to an unraisable exception so a
+# misbehaving user callback doesn't derail libdatachannel's worker
+# thread.
+
+_CB_LOCAL_DESCRIPTION: int = _native.CB_LOCAL_DESCRIPTION
+_CB_LOCAL_CANDIDATE: int = _native.CB_LOCAL_CANDIDATE
+_CB_STATE_CHANGE: int = _native.CB_STATE_CHANGE
+_CB_ICE_STATE_CHANGE: int = _native.CB_ICE_STATE_CHANGE
+_CB_GATHERING_STATE_CHANGE: int = _native.CB_GATHERING_STATE_CHANGE
+_CB_SIGNALING_STATE_CHANGE: int = _native.CB_SIGNALING_STATE_CHANGE
+_CB_DATA_CHANNEL: int = _native.CB_DATA_CHANNEL
+_CB_DC_OPEN: int = _native.CB_DC_OPEN
+_CB_DC_CLOSED: int = _native.CB_DC_CLOSED
+_CB_DC_ERROR: int = _native.CB_DC_ERROR
+_CB_DC_MESSAGE: int = _native.CB_DC_MESSAGE
+_CB_DC_BUFFERED_AMOUNT_LOW: int = _native.CB_DC_BUFFERED_AMOUNT_LOW
+_CB_LOG: int = _native.CB_LOG
 
 
-@ffi.callback("rtcDescriptionCallbackFunc")
-def _on_local_description(pc: int, sdp: Any, type_: Any, ptr: Any) -> None:
-    inst = _lookup_pc(pc)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("local_description")
+def _fire(cb: Callable[..., None] | None, *args: Any) -> None:
     if cb is None:
         return
     try:
-        cb(
-            ffi.string(sdp).decode("utf-8", errors="replace") if sdp else "",
-            ffi.string(type_).decode("utf-8", errors="replace") if type_ else "",
-        )
-    except Exception:  # pragma: no cover - best effort
+        cb(*args)
+    except Exception:  # pragma: no cover — best-effort dispatch
         import sys
 
         sys.excepthook(*sys.exc_info())
 
 
-@ffi.callback("rtcCandidateCallbackFunc")
-def _on_local_candidate(pc: int, cand: Any, mid: Any, ptr: Any) -> None:
-    inst = _lookup_pc(pc)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("local_candidate")
-    if cb is None:
-        return
-    try:
-        cb(
-            ffi.string(cand).decode("utf-8", errors="replace") if cand else "",
-            ffi.string(mid).decode("utf-8", errors="replace") if mid else "",
-        )
-    except Exception:  # pragma: no cover
-        import sys
+def _dispatch(kind: int, handle: int, *payload: Any) -> None:
+    """Single entry point the C trampolines call into.
 
-        sys.excepthook(*sys.exc_info())
+    Runs with the GIL held (acquired inside the trampoline). Looks up
+    the owning wrapper, then fires the relevant stored callback.
+    """
+    if kind == _CB_LOCAL_DESCRIPTION:
+        pc = _lookup_pc(handle)
+        if pc is not None:
+            _fire(pc._callbacks.get("local_description"), *payload)
+    elif kind == _CB_LOCAL_CANDIDATE:
+        pc = _lookup_pc(handle)
+        if pc is not None:
+            _fire(pc._callbacks.get("local_candidate"), *payload)
+    elif kind == _CB_STATE_CHANGE:
+        pc = _lookup_pc(handle)
+        if pc is not None:
+            _fire(pc._callbacks.get("state_change"), *payload)
+    elif kind == _CB_ICE_STATE_CHANGE:
+        pc = _lookup_pc(handle)
+        if pc is not None:
+            _fire(pc._callbacks.get("ice_state_change"), *payload)
+    elif kind == _CB_GATHERING_STATE_CHANGE:
+        pc = _lookup_pc(handle)
+        if pc is not None:
+            _fire(pc._callbacks.get("gathering_state_change"), *payload)
+    elif kind == _CB_SIGNALING_STATE_CHANGE:
+        pc = _lookup_pc(handle)
+        if pc is not None:
+            _fire(pc._callbacks.get("signaling_state_change"), *payload)
+    elif kind == _CB_DATA_CHANNEL:
+        pc = _lookup_pc(handle)
+        if pc is not None:
+            _fire(pc._callbacks.get("data_channel"), *payload)
+    elif kind == _CB_DC_OPEN:
+        dc = _lookup_dc(handle)
+        if dc is not None:
+            _fire(dc._callbacks.get("open"))
+    elif kind == _CB_DC_CLOSED:
+        dc = _lookup_dc(handle)
+        if dc is not None:
+            _fire(dc._callbacks.get("closed"))
+    elif kind == _CB_DC_ERROR:
+        dc = _lookup_dc(handle)
+        if dc is not None:
+            _fire(dc._callbacks.get("error"), *payload)
+    elif kind == _CB_DC_MESSAGE:
+        dc = _lookup_dc(handle)
+        if dc is not None:
+            # payload = (data: bytes|str, is_text: bool)
+            data, _is_text = payload
+            _fire(dc._callbacks.get("message"), data)
+    elif kind == _CB_DC_BUFFERED_AMOUNT_LOW:
+        dc = _lookup_dc(handle)
+        if dc is not None:
+            _fire(dc._callbacks.get("buffered_amount_low"))
+    elif kind == _CB_LOG:
+        # For logs the first positional is the level, not the handle.
+        cb = _log_callback
+        if cb is not None:
+            level, message = handle, payload[0]
+            try:
+                cb(int(level), str(message))
+            except Exception:  # pragma: no cover
+                import sys
 
-
-def _dispatch_pc_int(pc: int, state: int, slot: str) -> None:
-    inst = _lookup_pc(pc)
-    if inst is None:
-        return
-    cb = inst._callbacks.get(slot)
-    if cb is None:
-        return
-    try:
-        cb(int(state))
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
-
-
-# cffi is strictly type-checked: even though every PC state-change callback
-# has the same (int, enum, void*) shape, each enum is a distinct ctype and
-# needs its own trampoline. The shared dispatcher above handles the logic.
-@ffi.callback("rtcStateChangeCallbackFunc")
-def _on_state_change(pc: int, state: int, ptr: Any) -> None:
-    _dispatch_pc_int(pc, state, "state_change")
-
-
-@ffi.callback("rtcIceStateChangeCallbackFunc")
-def _on_ice_state_change(pc: int, state: int, ptr: Any) -> None:
-    _dispatch_pc_int(pc, state, "ice_state_change")
-
-
-@ffi.callback("rtcGatheringStateCallbackFunc")
-def _on_gathering_state_change(pc: int, state: int, ptr: Any) -> None:
-    _dispatch_pc_int(pc, state, "gathering_state_change")
-
-
-@ffi.callback("rtcSignalingStateCallbackFunc")
-def _on_signaling_state_change(pc: int, state: int, ptr: Any) -> None:
-    _dispatch_pc_int(pc, state, "signaling_state_change")
-
-
-@ffi.callback("rtcDataChannelCallbackFunc")
-def _on_data_channel(pc: int, dc: int, ptr: Any) -> None:
-    inst = _lookup_pc(pc)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("data_channel")
-    if cb is None:
-        return
-    try:
-        cb(int(dc))
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
+                sys.excepthook(*sys.exc_info())
 
 
-@ffi.callback("rtcOpenCallbackFunc")
-def _on_open(handle: int, ptr: Any) -> None:
-    inst = _lookup_dc(handle)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("open")
-    if cb is None:
-        return
-    try:
-        cb()
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
+# Install the dispatcher once at import time. The binding holds exactly
+# one Python reference (this function), which the atexit hook clears.
+_native.register_dispatcher(_dispatch)
 
 
-@ffi.callback("rtcClosedCallbackFunc")
-def _on_closed(handle: int, ptr: Any) -> None:
-    inst = _lookup_dc(handle)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("closed")
-    if cb is None:
-        return
-    try:
-        cb()
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
-
-
-@ffi.callback("rtcErrorCallbackFunc")
-def _on_error(handle: int, err: Any, ptr: Any) -> None:
-    inst = _lookup_dc(handle)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("error")
-    if cb is None:
-        return
-    try:
-        cb(ffi.string(err).decode("utf-8", errors="replace") if err else "")
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
-
-
-@ffi.callback("rtcMessageCallbackFunc")
-def _on_message(handle: int, data: Any, size: int, ptr: Any) -> None:
-    inst = _lookup_dc(handle)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("message")
-    if cb is None:
-        return
-    try:
-        if size < 0:
-            # Null-terminated text payload.
-            cb(ffi.string(data).decode("utf-8", errors="replace") if data else "")
-        else:
-            cb(bytes(ffi.buffer(data, size)))
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
-
-
-@ffi.callback("rtcBufferedAmountLowCallbackFunc")
-def _on_buffered_amount_low(handle: int, ptr: Any) -> None:
-    inst = _lookup_dc(handle)
-    if inst is None:
-        return
-    cb = inst._callbacks.get("buffered_amount_low")
-    if cb is None:
-        return
-    try:
-        cb()
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
-
-
-# ---- PeerConnection ----------------------------------------------------
+# ---- PeerConnection -----------------------------------------------------
 
 
 class PeerConnection:
-    __slots__ = ("_callbacks", "_destroyed", "_handle", "_ice_buffers")
+    __slots__ = ("_callbacks", "_destroyed", "_handle")
 
     def __init__(
         self,
@@ -303,38 +200,21 @@ class PeerConnection:
         certificate_type: int = 0,
         ice_transport_policy: int = 0,
     ) -> None:
-        # Keep byte strings alive so the `const char **` pointers we pass
-        # into rtcConfiguration don't dangle during rtcCreatePeerConnection.
-        encoded = [s.encode("utf-8") for s in ice_servers]
-        ice_keepalive = [ffi.new("char[]", b) for b in encoded]
-        ice_array = ffi.new("const char *[]", ice_keepalive) if ice_keepalive else ffi.NULL
-        self._ice_buffers = (ice_keepalive, ice_array)
-
-        cfg = ffi.new("rtcConfiguration *")
-        cfg.iceServers = ice_array
-        cfg.iceServersCount = len(ice_keepalive)
-        cfg.proxyServer = ffi.NULL
-        cfg.bindAddress = ffi.NULL
-        cfg.certificateType = certificate_type
-        cfg.iceTransportPolicy = ice_transport_policy
-        cfg.enableIceTcp = enable_ice_tcp
-        cfg.enableIceUdpMux = False
-        cfg.disableAutoNegotiation = disable_auto_negotiation
-        cfg.forceMediaTransport = False
-        cfg.portRangeBegin = port_range_begin
-        cfg.portRangeEnd = port_range_end
-        cfg.mtu = mtu
-        cfg.maxMessageSize = max_message_size
-
-        handle = lib.rtcCreatePeerConnection(cfg)
-        _check(handle, "rtcCreatePeerConnection")
-
-        self._handle = handle
+        self._handle: int = _native.create_peer_connection(
+            ice_servers=list(ice_servers),
+            port_range_begin=port_range_begin,
+            port_range_end=port_range_end,
+            mtu=mtu,
+            max_message_size=max_message_size,
+            enable_ice_tcp=enable_ice_tcp,
+            disable_auto_negotiation=disable_auto_negotiation,
+            certificate_type=certificate_type,
+            ice_transport_policy=ice_transport_policy,
+        )
         self._callbacks: dict[str, Callable[..., None]] = {}
         self._destroyed = False
-
         with _pc_lock:
-            _pcs[handle] = self
+            _pcs[self._handle] = self
 
     @property
     def handle(self) -> int:
@@ -346,84 +226,69 @@ class PeerConnection:
 
     # ---- Callback registration ------------------------------------------
 
-    def set_on_local_description(self, callback: Callable[[str, str], None]) -> None:
+    def set_on_local_description(
+        self,
+        callback: Callable[[str, str], None],
+    ) -> None:
         self._callbacks["local_description"] = callback
-        _check(
-            lib.rtcSetLocalDescriptionCallback(self._handle, _on_local_description),
-            "rtcSetLocalDescriptionCallback",
-        )
+        _native.set_local_description_callback(self._handle, True)
 
-    def set_on_local_candidate(self, callback: Callable[[str, str], None]) -> None:
+    def set_on_local_candidate(
+        self,
+        callback: Callable[[str, str], None],
+    ) -> None:
         self._callbacks["local_candidate"] = callback
-        _check(
-            lib.rtcSetLocalCandidateCallback(self._handle, _on_local_candidate),
-            "rtcSetLocalCandidateCallback",
-        )
+        _native.set_local_candidate_callback(self._handle, True)
 
     def set_on_state_change(self, callback: Callable[[int], None]) -> None:
         self._callbacks["state_change"] = callback
-        _check(
-            lib.rtcSetStateChangeCallback(self._handle, _on_state_change),
-            "rtcSetStateChangeCallback",
-        )
+        _native.set_state_change_callback(self._handle, True)
 
     def set_on_ice_state_change(self, callback: Callable[[int], None]) -> None:
         self._callbacks["ice_state_change"] = callback
-        _check(
-            lib.rtcSetIceStateChangeCallback(self._handle, _on_ice_state_change),
-            "rtcSetIceStateChangeCallback",
-        )
+        _native.set_ice_state_change_callback(self._handle, True)
 
-    def set_on_gathering_state_change(self, callback: Callable[[int], None]) -> None:
+    def set_on_gathering_state_change(
+        self,
+        callback: Callable[[int], None],
+    ) -> None:
         self._callbacks["gathering_state_change"] = callback
-        _check(
-            lib.rtcSetGatheringStateChangeCallback(self._handle, _on_gathering_state_change),
-            "rtcSetGatheringStateChangeCallback",
-        )
+        _native.set_gathering_state_change_callback(self._handle, True)
 
-    def set_on_signaling_state_change(self, callback: Callable[[int], None]) -> None:
+    def set_on_signaling_state_change(
+        self,
+        callback: Callable[[int], None],
+    ) -> None:
         self._callbacks["signaling_state_change"] = callback
-        _check(
-            lib.rtcSetSignalingStateChangeCallback(self._handle, _on_signaling_state_change),
-            "rtcSetSignalingStateChangeCallback",
-        )
+        _native.set_signaling_state_change_callback(self._handle, True)
 
     def set_on_data_channel(self, callback: Callable[[int], None]) -> None:
         self._callbacks["data_channel"] = callback
-        _check(
-            lib.rtcSetDataChannelCallback(self._handle, _on_data_channel),
-            "rtcSetDataChannelCallback",
-        )
+        _native.set_data_channel_callback(self._handle, True)
 
     # ---- SDP plumbing ---------------------------------------------------
 
     def set_local_description(self, type: str | None = None) -> None:
-        arg = type.encode("utf-8") if type is not None else ffi.NULL
-        _check(lib.rtcSetLocalDescription(self._handle, arg), "rtcSetLocalDescription")
+        _native.set_local_description(self._handle, type)
 
     def set_remote_description(self, sdp: str, type: str) -> None:
-        _check(
-            lib.rtcSetRemoteDescription(self._handle, sdp.encode("utf-8"), type.encode("utf-8")),
-            "rtcSetRemoteDescription",
-        )
+        _native.set_remote_description(self._handle, sdp, type)
 
     def add_remote_candidate(self, candidate: str, mid: str = "") -> None:
-        mid_arg = mid.encode("utf-8") if mid else ffi.NULL
-        _check(
-            lib.rtcAddRemoteCandidate(self._handle, candidate.encode("utf-8"), mid_arg),
-            "rtcAddRemoteCandidate",
+        _native.add_remote_candidate(
+            self._handle,
+            candidate,
+            mid if mid else None,
         )
 
     def get_local_description(self) -> str | None:
-        return _read_string(self._handle, lib.rtcGetLocalDescription, "rtcGetLocalDescription")
+        return _native.get_local_description(self._handle)
 
     def get_remote_description(self) -> str | None:
-        return _read_string(self._handle, lib.rtcGetRemoteDescription, "rtcGetRemoteDescription")
+        return _native.get_remote_description(self._handle)
 
     def get_local_description_type(self) -> str | None:
-        return _read_string(
-            self._handle, lib.rtcGetLocalDescriptionType, "rtcGetLocalDescriptionType"
-        )
+        return _native.get_local_description_type(self._handle)
 
     # ---- DataChannel creation ------------------------------------------
 
@@ -439,53 +304,37 @@ class PeerConnection:
         manual_stream: bool = False,
         stream: int = 0,
     ) -> int:
-        init = ffi.new("rtcDataChannelInit *")
-        init.reliability.unordered = unordered
-        init.reliability.unreliable = unreliable
-        init.reliability.maxPacketLifeTime = max_packet_lifetime
-        init.reliability.maxRetransmits = max_retransmits
-        # Keep the protocol bytes alive for the duration of the call.
-        proto_bytes = protocol.encode("utf-8") if protocol else b""
-        init.protocol = ffi.new("char[]", proto_bytes) if protocol else ffi.NULL
-        init.negotiated = negotiated
-        init.manualStream = manual_stream
-        init.stream = stream
-        handle = lib.rtcCreateDataChannelEx(self._handle, label.encode("utf-8"), init)
-        _check(handle, "rtcCreateDataChannelEx")
-        return handle
+        return _native.create_data_channel(
+            self._handle,
+            label,
+            unordered=unordered,
+            unreliable=unreliable,
+            max_packet_lifetime=max_packet_lifetime,
+            max_retransmits=max_retransmits,
+            protocol=protocol,
+            negotiated=negotiated,
+            manual_stream=manual_stream,
+            stream=stream,
+        )
 
     # ---- Lifecycle -----------------------------------------------------
 
     def close(self) -> None:
         if self._destroyed:
             return
-        lib.rtcClosePeerConnection(self._handle)
+        _native.close_peer_connection(self._handle)
 
     def destroy(self) -> None:
         if self._destroyed:
             return
         self._destroyed = True
         handle = self._handle
-        # Unregister BEFORE rtcDeletePeerConnection so no callback can race
-        # the registry cleanup.
-        lib.rtcSetLocalDescriptionCallback(handle, ffi.NULL)
-        lib.rtcSetLocalCandidateCallback(handle, ffi.NULL)
-        lib.rtcSetStateChangeCallback(handle, ffi.NULL)
-        lib.rtcSetIceStateChangeCallback(handle, ffi.NULL)
-        lib.rtcSetGatheringStateChangeCallback(handle, ffi.NULL)
-        lib.rtcSetSignalingStateChangeCallback(handle, ffi.NULL)
-        lib.rtcSetDataChannelCallback(handle, ffi.NULL)
         self._callbacks.clear()
         with _pc_lock:
             _pcs.pop(handle, None)
-        # rtcDeletePeerConnection releases the GIL internally? No — cffi
-        # doesn't release the GIL by default for external calls. But
-        # rtcDelete blocks waiting for callbacks; if those callbacks try to
-        # acquire the GIL, we'd deadlock. We must release it explicitly.
-        rc = lib.rtcDeletePeerConnection(handle)
-        if rc < 0:
-            # Don't raise — destroy is best-effort during cleanup.
-            pass
+        # _native releases the GIL around rtcDeletePeerConnection, so
+        # in-flight callbacks can acquire it and finish cleanly.
+        _native.delete_peer_connection(handle)
 
 
 # ---- DataChannel --------------------------------------------------------
@@ -513,89 +362,74 @@ class DataChannel:
 
     def set_on_open(self, callback: Callable[[], None]) -> None:
         self._callbacks["open"] = callback
-        _check(lib.rtcSetOpenCallback(self._handle, _on_open), "rtcSetOpenCallback")
+        _native.set_dc_open_callback(self._handle, True)
 
     def set_on_closed(self, callback: Callable[[], None]) -> None:
         self._callbacks["closed"] = callback
-        _check(lib.rtcSetClosedCallback(self._handle, _on_closed), "rtcSetClosedCallback")
+        _native.set_dc_closed_callback(self._handle, True)
 
     def set_on_error(self, callback: Callable[[str], None]) -> None:
         self._callbacks["error"] = callback
-        _check(lib.rtcSetErrorCallback(self._handle, _on_error), "rtcSetErrorCallback")
+        _native.set_dc_error_callback(self._handle, True)
 
     def set_on_message(self, callback: Callable[[bytes | str], None]) -> None:
         self._callbacks["message"] = callback
-        _check(lib.rtcSetMessageCallback(self._handle, _on_message), "rtcSetMessageCallback")
+        _native.set_dc_message_callback(self._handle, True)
 
     def set_on_buffered_amount_low(self, callback: Callable[[], None]) -> None:
         self._callbacks["buffered_amount_low"] = callback
-        _check(
-            lib.rtcSetBufferedAmountLowCallback(self._handle, _on_buffered_amount_low),
-            "rtcSetBufferedAmountLowCallback",
-        )
+        _native.set_dc_buffered_amount_low_callback(self._handle, True)
 
     # ---- Messaging ------------------------------------------------------
 
     def send_bytes(self, data: bytes) -> None:
-        _check(lib.rtcSendMessage(self._handle, data, len(data)), "rtcSendMessage")
+        _native.send_bytes(self._handle, data)
 
     def send_text(self, data: str) -> None:
-        # size < 0 tells libdatachannel the buffer is null-terminated text.
-        encoded = data.encode("utf-8")
-        _check(lib.rtcSendMessage(self._handle, encoded, -1), "rtcSendMessage")
+        _native.send_text(self._handle, data)
 
     # ---- State ----------------------------------------------------------
 
     def is_open(self) -> bool:
-        return bool(lib.rtcIsOpen(self._handle))
+        return bool(_native.is_open(self._handle))
 
     def is_closed(self) -> bool:
-        return bool(lib.rtcIsClosed(self._handle))
+        return bool(_native.is_closed(self._handle))
 
     def buffered_amount(self) -> int:
-        return _check(lib.rtcGetBufferedAmount(self._handle), "rtcGetBufferedAmount")
+        return int(_native.buffered_amount(self._handle))
 
     def max_message_size(self) -> int:
-        return _check(lib.rtcMaxMessageSize(self._handle), "rtcMaxMessageSize")
+        return int(_native.max_message_size(self._handle))
 
     def set_buffered_amount_low_threshold(self, amount: int) -> None:
-        _check(
-            lib.rtcSetBufferedAmountLowThreshold(self._handle, amount),
-            "rtcSetBufferedAmountLowThreshold",
-        )
+        _native.set_buffered_amount_low_threshold(self._handle, amount)
 
     def label(self) -> str | None:
-        return _read_string(self._handle, lib.rtcGetDataChannelLabel, "rtcGetDataChannelLabel")
+        return _native.get_dc_label(self._handle)
 
     def protocol(self) -> str | None:
-        return _read_string(
-            self._handle, lib.rtcGetDataChannelProtocol, "rtcGetDataChannelProtocol"
-        )
+        return _native.get_dc_protocol(self._handle)
 
     def stream(self) -> int:
-        return _check(lib.rtcGetDataChannelStream(self._handle), "rtcGetDataChannelStream")
+        return int(_native.get_dc_stream(self._handle))
 
     # ---- Lifecycle ------------------------------------------------------
 
     def close(self) -> None:
         if self._destroyed:
             return
-        lib.rtcClose(self._handle)
+        _native.close_dc(self._handle)
 
     def destroy(self) -> None:
         if self._destroyed:
             return
         self._destroyed = True
         handle = self._handle
-        lib.rtcSetOpenCallback(handle, ffi.NULL)
-        lib.rtcSetClosedCallback(handle, ffi.NULL)
-        lib.rtcSetErrorCallback(handle, ffi.NULL)
-        lib.rtcSetMessageCallback(handle, ffi.NULL)
-        lib.rtcSetBufferedAmountLowCallback(handle, ffi.NULL)
         self._callbacks.clear()
         with _dc_lock:
             _dcs.pop(handle, None)
-        lib.rtcDeleteDataChannel(handle)
+        _native.delete_data_channel(handle)
 
 
 # ---- Logger -------------------------------------------------------------
@@ -603,35 +437,22 @@ class DataChannel:
 _log_callback: Callable[[int, str], None] | None = None
 
 
-@ffi.callback("rtcLogCallbackFunc")
-def _log_trampoline(level: int, message: Any) -> None:
-    cb = _log_callback
-    if cb is None:
-        return
-    try:
-        cb(int(level), ffi.string(message).decode("utf-8", errors="replace") if message else "")
-    except Exception:  # pragma: no cover
-        import sys
-
-        sys.excepthook(*sys.exc_info())
-
-
 def init_logger(level: int, callback: Callable[[int, str], None] | None) -> None:
     global _log_callback
     _log_callback = callback
-    lib.rtcInitLogger(level, _log_trampoline if callback is not None else ffi.NULL)
+    _native.init_logger(level, callback is not None)
 
 
 def preload() -> None:
-    lib.rtcPreload()
+    _native.preload()
 
 
 def cleanup() -> None:
-    lib.rtcCleanup()
+    _native.cleanup()
 
 
 def set_thread_pool_size(count: int) -> int:
-    return _check(lib.rtcSetThreadPoolSize(count), "rtcSetThreadPoolSize")
+    return int(_native.set_thread_pool_size(count))
 
 
 # ---- Shutdown -----------------------------------------------------------
@@ -650,7 +471,12 @@ def _atexit_destroy_all() -> None:
             with contextlib.suppress(Exception):
                 pc.destroy()
     with contextlib.suppress(Exception):
-        lib.rtcCleanup()
+        _native.cleanup()
+    # Drop the Python reference _native holds to our dispatcher so late
+    # callbacks from C threads see a no-op instead of reaching into a
+    # half-torn-down interpreter.
+    with contextlib.suppress(Exception):
+        _native.register_dispatcher(None)
 
 
 atexit.register(_atexit_destroy_all)

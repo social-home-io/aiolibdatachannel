@@ -7,10 +7,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # --- libdatachannel configuration -------------------------------------------
-# Build libdatachannel as a shared library that cffi loads at runtime.
-# Dependencies (usrsctp, libjuice, openssl) link statically into it so the
-# wheel ships a single self-contained `.so` / `.dylib` / `.dll`.
-set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+# Build libdatachannel as a static library linked directly into the nanobind
+# extension. Dependencies (usrsctp, libjuice, openssl) link statically as
+# well so the wheel ships one self-contained extension module.
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(NO_EXAMPLES ON CACHE BOOL "" FORCE)
 set(NO_TESTS ON CACHE BOOL "" FORCE)
 set(NO_WEBSOCKET ON CACHE BOOL "" FORCE)
@@ -26,20 +26,41 @@ endif()
 
 add_subdirectory(vendor/libdatachannel)
 
-# --- Ship the shared library inside the Python package ----------------------
-# The LibDataChannel shared target already encodes the correct versioned
-# soname. scikit-build-core will place the installed files under the package
-# directory in the built wheel.
-install(TARGETS datachannel
-    LIBRARY DESTINATION aiolibdatachannel/_lib
-    RUNTIME DESTINATION aiolibdatachannel/_lib)
+# --- nanobind extension -----------------------------------------------------
+# scikit-build-core runs this file inside a build-isolation venv that has
+# ``nanobind`` installed (per [build-system].requires in pyproject.toml),
+# but doesn't automatically add nanobind's CMake config dir to
+# CMAKE_PREFIX_PATH. Canonical workaround: ask the wheel where its
+# CMake package lives via ``python -m nanobind --cmake_dir``.
+find_package(Python 3.12 COMPONENTS Interpreter Development.Module REQUIRED)
 
-# Set rpath so the shared lib can find its transitive deps (none in our
-# static-deps layout, but future-proofing in case we ever flip one to shared).
-if(APPLE)
-    set_target_properties(datachannel PROPERTIES
-        INSTALL_RPATH "@loader_path")
-elseif(UNIX)
-    set_target_properties(datachannel PROPERTIES
-        INSTALL_RPATH "$ORIGIN")
+execute_process(
+    COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    OUTPUT_VARIABLE NB_DIR
+    RESULT_VARIABLE NB_DIR_RESULT
+)
+if(NOT NB_DIR_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "Could not locate nanobind's CMake package via "
+        "'${Python_EXECUTABLE} -m nanobind --cmake_dir'. Is nanobind "
+        "installed in this Python environment?")
 endif()
+list(APPEND CMAKE_PREFIX_PATH "${NB_DIR}")
+find_package(nanobind CONFIG REQUIRED)
+
+nanobind_add_module(
+    _native
+    STABLE_ABI
+    src/_aiolibdatachannel/bindings.cpp
+)
+
+# The nanobind module calls libdatachannel's C API (rtc/rtc.h). Linking
+# the static ``datachannel`` target drags in libdatachannel + static deps.
+target_link_libraries(_native PRIVATE datachannel)
+target_include_directories(_native PRIVATE vendor/libdatachannel/include)
+
+# Place the built extension at aiolibdatachannel/_native.<abi>.so inside
+# the wheel so ``from aiolibdatachannel import _native`` resolves without
+# any sys.path gymnastics.
+install(TARGETS _native LIBRARY DESTINATION aiolibdatachannel)
