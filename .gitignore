@@ -41,3 +41,6 @@ wheelhouse/
 
 # setuptools-scm writes the resolved version here at build time.
 aiolibdatachannel/_version.py
+aiolibdatachannel/_native*.so
+dist/
+build/
