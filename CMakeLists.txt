@@ -51,25 +51,8 @@ find_package(nanobind CONFIG REQUIRED)
 
 nanobind_add_module(
     _native
-    STABLE_ABI
     src/_aiolibdatachannel/bindings.cpp
 )
-
-# Force the ``abi3`` suffix on Linux/macOS. ``STABLE_ABI`` already
-# compiles against ``Py_LIMITED_API``, but nanobind/CMake still emits
-# the per-CPython-version filename (``_native.cpython-312-…so``)
-# unless we override here. With that filename, Python's importer
-# only finds the module on the exact build-time CPython (3.12);
-# 3.13+ users see ``ImportError: cannot import name '_native'``.
-# Renaming to ``_native.abi3.so`` makes the same compiled module
-# loadable by every Python ≥ 3.12 — which is the whole point of
-# the stable ABI build.
-#
-# Windows uses ``.pyd`` for both abi3 and per-version modules
-# (no separate marker), so leave the default suffix there.
-if(NOT WIN32)
-    set_target_properties(_native PROPERTIES SUFFIX ".abi3.so")
-endif()
 
 # The nanobind module calls libdatachannel's C API (rtc/rtc.h). Linking
 # the static ``datachannel`` target drags in libdatachannel + static deps.

@@ -66,10 +66,15 @@ minimum-version = "0.10"
 build-dir = "build/{wheel_tag}"
 cmake.version = ">=3.24"
 ninja.make-fallback = true
-# Use nanobind's stable ABI (Py_LIMITED_API) so one compiled wheel covers
-# all CPython 3.12+ — same practical shape as the old cffi wheel, minus
-# the runtime cffi dependency.
-wheel.py-api = "cp312"
+# We deliberately *do not* enable nanobind's stable-ABI mode any more.
+# A single ``cp312-abi3`` wheel statically bundled OpenSSL via
+# auditwheel; the bundled copy collided with the OpenSSL CPython itself
+# loaded for ``_ssl`` / ``hashlib`` (process-global PRNG / FIPS state),
+# which segfaulted on first ``PeerConnection`` use under CPython 3.14.
+# Per-Python-version wheels let us link OpenSSL *dynamically* (see
+# ``CIBW_REPAIR_WHEEL_COMMAND_*`` in ``.github/workflows/release.yml``)
+# so each install picks up the host's libssl — the same one CPython
+# already loaded — and the cohabit hazard goes away by construction.
 wheel.packages = ["aiolibdatachannel"]
 
 # Rebuild editable installs on-demand when sources change.

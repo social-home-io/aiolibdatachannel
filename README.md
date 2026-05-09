@@ -16,20 +16,26 @@ Python.
 pip install aiolibdatachannel
 ```
 
-Wheels are published for Linux (`manylinux_2_28` x86_64 / aarch64) and
-macOS (arm64, 14.0+). Intel Macs and Windows aren't currently covered —
-Intel Mac because Apple Silicon is the modern target, Windows because
-libdatachannel dynamically links OpenSSL and the wheel packaging for
-that on Windows is still open.
+Wheels are published for Linux (`manylinux_2_34` x86_64 / aarch64) and
+macOS (arm64, 14.0+) per CPython version (`cp312` / `cp313` / `cp314`).
+Intel Macs and Windows aren't currently covered — Intel Mac because
+Apple Silicon is the modern target, Windows because libdatachannel
+dynamically links OpenSSL and the wheel packaging for that on Windows
+is still open.
 
-The Python↔C boundary uses [nanobind](https://github.com/wjakob/nanobind)'s
-stable-ABI mode (`Py_LIMITED_API`): libdatachannel and its static
-dependencies (usrsctp, libjuice, OpenSSL) link directly into the
-extension, and a single `cp312-abi3-<platform>` wheel per architecture
-covers every CPython 3.12+ interpreter — no per-Python-version build.
-The binding layer itself is deliberately thin: native trampolines route
-every libdatachannel callback through a single Python dispatcher, and
-the asyncio semantics live in the pure-Python wrapper on top, not in C++.
+> ℹ️ Earlier releases shipped a single `cp312-abi3` wheel covering all
+> CPython 3.12+. The bundled OpenSSL inside that wheel collided with
+> the OpenSSL CPython itself loads via `_ssl` / `hashlib` (process-
+> global PRNG / FIPS state), which segfaulted on first
+> `PeerConnection` use under CPython 3.14. We now publish per-version
+> wheels so each binary lines up with the matching interpreter ABI.
+
+The Python↔C boundary uses [nanobind](https://github.com/wjakob/nanobind):
+libdatachannel and its static dependencies (usrsctp, libjuice, OpenSSL)
+link directly into the extension. The binding layer itself is
+deliberately thin: native trampolines route every libdatachannel
+callback through a single Python dispatcher, and the asyncio semantics
+live in the pure-Python wrapper on top, not in C++.
 
 ## Quickstart
 
