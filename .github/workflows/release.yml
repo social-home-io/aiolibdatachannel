@@ -95,19 +95,19 @@ jobs:
           # that surfaced only on CPython 3.14.
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux_*"
-          # AlmaLinux 9 (manylinux_2_34) ships OpenSSL 3.x. The previous
-          # manylinux_2_28 base baked in OpenSSL 1.1.1, which auditwheel
-          # bundled into the wheel; on hosts that also load the system
-          # OpenSSL 3 (Python's ``_ssl`` does, transitively), the
-          # libdatachannel static link would crash on the first
-          # ``PeerConnection`` constructor under CPython 3.14. Match the
-          # bundled OpenSSL to what modern hosts already run.
+          # AlmaLinux 9 base (manylinux_2_34). The wheel uses Mbed TLS as
+          # libdatachannel's TLS backend rather than OpenSSL — bundling a
+          # second OpenSSL alongside the host CPython's ``_ssl`` (which
+          # loads its own OpenSSL globally) caused process-wide state
+          # corruption that surfaced as a segfault in
+          # ``std::vector<std::string>::~vector()`` on CPython 3.14.
+          # Mbed TLS shares no globals with OpenSSL, so the
+          # cohabitation hazard is gone.
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
-          CIBW_BEFORE_ALL_LINUX: "yum install -y openssl-devel"
-          CIBW_BEFORE_ALL_MACOS: "brew install openssl@3"
+          CIBW_BEFORE_ALL_LINUX: "yum install -y mbedtls-devel"
+          CIBW_BEFORE_ALL_MACOS: "brew install mbedtls"
           CIBW_ENVIRONMENT_MACOS: >-
-            OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
             MACOSX_DEPLOYMENT_TARGET=14.0
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio"
           # Smoke suite only — stress tests are skipped at this layer
