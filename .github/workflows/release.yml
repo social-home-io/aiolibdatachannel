@@ -4,10 +4,32 @@ on:
   # Fires on any git tag push — we use CalVer (e.g. 2026.4.21), but this
   # also covers plain v* tags or anything else someone pushes. The
   # setuptools-scm integration in pyproject.toml reads whatever tag you
-  # pushed and bakes it into the built wheel.
+  # pushed and bakes it into the built sdist.
   push:
     tags: ["*"]
   workflow_dispatch:
+
+# We publish *source* distributions only — no binary wheels. Reasons:
+#
+# * libdatachannel statically links OpenSSL into the wheel via auditwheel
+#   (renamed soname so the dynamic linker doesn't conflict). End-user
+#   CPython processes still load their own OpenSSL globally via the
+#   ``_ssl`` / ``hashlib`` modules, and OpenSSL's process-global state
+#   (PRNG, error queues, locks, FIPS provider machinery) is not
+#   isolated by soname renaming. On CPython 3.14 the two OpenSSLs
+#   collide hard enough to segfault inside ``rtcCreatePeerConnection``
+#   on first use. Sidestepping the cohabitation by shipping a source
+#   build means each user's libdatachannel links the *same* OpenSSL
+#   their Python already loaded — no two-version process.
+# * Source builds are slower for the user but make the surface honest:
+#   the user sees the C++ toolchain requirements in the install error
+#   instead of a wheel that imports cleanly and segfaults later.
+#
+# Users still install with ``pip install aiolibdatachannel`` — pip will
+# pull the sdist, build it locally against their system OpenSSL +
+# libdatachannel deps, and cache the resulting wheel. See README for
+# the system prerequisites (cmake, ninja, a C++ toolchain, libssl-dev /
+# openssl@3).
 
 jobs:
   build_sdist:
@@ -41,150 +63,9 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  build_wheels:
-    name: Build wheels on ${{ matrix.os }} (${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux amd64 + arm64.
-          - os: ubuntu-latest
-            arch: x86_64
-          - os: ubuntu-24.04-arm
-            arch: aarch64
-          # macOS arm64 only. Intel Mac (x86_64) is skipped — modern
-          # Macs are all Apple Silicon. The deployment target is 14.0
-          # because that's the minimum macOS the Homebrew openssl@3
-          # bottle ships with; delocate refuses to downgrade it.
-          - os: macos-14
-            arch: arm64
-          # Windows support is deferred — the bundled libdatachannel
-          # dynamically links OpenSSL's DLLs and we haven't wired up the
-          # delvewheel / os.add_dll_directory dance needed to make that
-          # work on end-user machines.
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          # setuptools-scm needs the full git history to resolve the
-          # current tag into a version string.
-          fetch-depth: 0
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      # cibuildwheel v3 added the runtime images for CPython 3.14 + the
-      # AlmaLinux 9 (manylinux_2_34) base used below. v2.21 ships
-      # neither.
-      - uses: pypa/cibuildwheel@v3.4
-        env:
-          # cibuildwheel tars the project and runs pip inside a manylinux
-          # container — git history isn't available there, so we forward
-          # the tag name directly and ask setuptools-scm to use it.
-          SETUPTOOLS_SCM_PRETEND_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          CIBW_ENVIRONMENT_PASS_LINUX: "SETUPTOOLS_SCM_PRETEND_VERSION"
-          CIBW_ARCHS: ${{ matrix.arch }}
-          # Nanobind's stable-ABI mode emits one cp312-abi3-<platform>
-          # wheel per (os, arch) that covers every CPython 3.12+. Listing
-          # cp312 / cp313 / cp314 explicitly doesn't multiply the wheels —
-          # cibuildwheel deduplicates by abi3 tag — but it does run the
-          # test command under each interpreter, which is the only thing
-          # that would have caught the OpenSSL 1.1 / 3.x cohabit crash
-          # that surfaced only on CPython 3.14.
-          CIBW_BUILD: "cp312-* cp313-* cp314-*"
-          CIBW_SKIP: "*-musllinux_*"
-          # AlmaLinux 9 base (manylinux_2_34). The wheel uses Mbed TLS as
-          # libdatachannel's TLS backend rather than OpenSSL — bundling a
-          # second OpenSSL alongside the host CPython's ``_ssl`` (which
-          # loads its own OpenSSL globally) caused process-wide state
-          # corruption that surfaced as a segfault in
-          # ``std::vector<std::string>::~vector()`` on CPython 3.14.
-          # Mbed TLS shares no globals with OpenSSL, so the
-          # cohabitation hazard is gone.
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
-          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
-          CIBW_BEFORE_ALL_LINUX: "yum install -y mbedtls-devel"
-          CIBW_BEFORE_ALL_MACOS: "brew install mbedtls"
-          CIBW_ENVIRONMENT_MACOS: >-
-            MACOSX_DEPLOYMENT_TARGET=14.0
-          CIBW_TEST_REQUIRES: "pytest pytest-asyncio"
-          # Smoke suite only — stress tests are skipped at this layer
-          # because they reliably hang inside cibuildwheel's
-          # manylinux_2_28 docker container (the same tests complete
-          # in ~70 s natively on the same host runner). Suspected
-          # container-specific SCTP/thread interaction we don't want
-          # to debug under release-time pressure. Stress coverage
-          # still runs via the CI workflow's ``tests-stress`` job
-          # (nightly cron + on-demand via label/workflow_dispatch) on
-          # the host runner without docker, so regressions are caught
-          # before the next release cut — just not on the release tag
-          # itself.
-          CIBW_TEST_COMMAND: >-
-            AIOLIB_REQUIRE_NATIVE=1
-            pytest {project}/tests -v -m "not stress"
-          # ``cp314-*`` is excluded because the cibuildwheel cp314
-          # interpreter (a from-source CPython 3.14 baked into the
-          # manylinux_2_34 image) segfaults inside libdatachannel's ICE
-          # gathering on the very first ``test_ice_candidates_*`` test —
-          # while the same wheel passes the same test under stock
-          # CPython 3.14 (see the ``smoke_wheels`` job below). Until the
-          # upstream cibuildwheel/manylinux 3.14 image ships a stable
-          # interpreter, we keep the wheel-build green by skipping its
-          # in-container 3.14 tests and lean on ``smoke_wheels`` to
-          # cover that target.
-          # ``*-macosx_*`` skip survives because loopback UDP perms
-          # aren't reliable on hosted macOS runners.
-          CIBW_TEST_SKIP: "*-macosx_* cp314-*"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-${{ matrix.arch }}
-          path: wheelhouse/*.whl
-
-  smoke_wheels:
-    # Re-test the just-built Linux wheels under stock CPython interpreters
-    # (actions/setup-python). Catches wheel-level regressions on Python
-    # versions whose cibuildwheel test environment we had to skip — at
-    # the moment that's CPython 3.14, where the in-container cp314
-    # interpreter from manylinux_2_34 segfaults inside libdatachannel
-    # but the same wheel passes the same suite on a stock 3.14.
-    name: Smoke-test wheel (Python ${{ matrix.python }}, ${{ matrix.arch }})
-    needs: [build_wheels]
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            arch: x86_64
-            python: "3.14"
-          - os: ubuntu-24.04-arm
-            arch: aarch64
-            python: "3.14"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-${{ matrix.arch }}
-          path: wheelhouse
-      - name: Install wheel + smoke test
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio
-          # The wheel filename is abi3-tagged so a single wheel covers
-          # cp312+; install the manylinux artefact straight from the
-          # wheelhouse dir.
-          pip install wheelhouse/aiolibdatachannel-*-cp312-abi3-manylinux*.whl
-          AIOLIB_REQUIRE_NATIVE=1 pytest tests -v -m "not stress"
-
   publish:
     name: Publish to PyPI
-    needs: [build_sdist, build_wheels, smoke_wheels]
+    needs: [build_sdist]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     environment:

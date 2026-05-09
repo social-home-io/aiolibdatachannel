@@ -85,15 +85,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install system deps (Ubuntu)
         if: runner.os == 'Linux'
-        # libdatachannel uses Mbed TLS as the TLS backend (see
-        # CMakeLists.txt). ``libmbedtls-dev`` provides the headers + libs
-        # ``find_package(MbedTLS 3 REQUIRED)`` looks for.
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libmbedtls-dev
+          sudo apt-get install -y ninja-build libssl-dev
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja mbedtls
+        run: brew install ninja openssl@3
       - name: Install package
         shell: bash
         run: |
@@ -129,10 +126,10 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libmbedtls-dev
+          sudo apt-get install -y ninja-build libssl-dev
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja mbedtls
+        run: brew install ninja openssl@3
       - name: Install package
         run: |
           python -m pip install --upgrade pip

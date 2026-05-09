@@ -18,20 +18,9 @@ set(NO_MEDIA ON CACHE BOOL "" FORCE)
 set(PREFER_SYSTEM_LIB OFF CACHE BOOL "" FORCE)
 set(USE_NICE OFF CACHE BOOL "" FORCE)
 
-# Default TLS backend: Mbed TLS. We *do not* use OpenSSL because end-user
-# CPython processes already load their own OpenSSL via the ``_ssl`` /
-# ``hashlib`` modules; statically bundling a second OpenSSL into this
-# extension caused process-global state collisions (PRNG, error queues,
-# locks) on CPython 3.14, which surfaced as a segfault inside
-# ``std::vector<std::string>::~vector()`` on the very first
-# ``PeerConnection`` use. Mbed TLS is self-contained and shares no
-# globals with OpenSSL, so the cohabitation is gone.
-#
-# Override with ``-DUSE_OPENSSL_TLS=ON`` (force OpenSSL) or
-# ``-DUSE_GNUTLS=ON`` if you have a specific reason — but note that any
-# resulting wheel inherits the OpenSSL cohabitation hazard.
-if(NOT DEFINED USE_MBEDTLS AND NOT DEFINED USE_GNUTLS AND NOT DEFINED USE_OPENSSL_TLS)
-    set(USE_MBEDTLS ON CACHE BOOL "" FORCE)
+# Default TLS backend: OpenSSL. Override with -DUSE_MBEDTLS=ON or -DUSE_GNUTLS=ON.
+if(NOT DEFINED USE_MBEDTLS AND NOT DEFINED USE_GNUTLS)
+    set(USE_MBEDTLS OFF CACHE BOOL "" FORCE)
     set(USE_GNUTLS OFF CACHE BOOL "" FORCE)
 endif()
 

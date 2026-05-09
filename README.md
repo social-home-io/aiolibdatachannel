@@ -16,20 +16,37 @@ Python.
 pip install aiolibdatachannel
 ```
 
-Wheels are published for Linux (`manylinux_2_28` x86_64 / aarch64) and
-macOS (arm64, 14.0+). Intel Macs and Windows aren't currently covered —
-Intel Mac because Apple Silicon is the modern target, Windows because
-libdatachannel dynamically links OpenSSL and the wheel packaging for
-that on Windows is still open.
+We publish a **source distribution only** — pip will compile it locally
+against your system's libdatachannel build deps. Pre-built binary
+wheels would have to bundle their own OpenSSL, and OpenSSL's
+process-global state (PRNG, error queue, FIPS provider machinery)
+collides with the OpenSSL that CPython itself loads via `_ssl` /
+`hashlib`. CPython 3.14 made the collision turn into a hard segfault
+on first `PeerConnection` use, and we'd rather make the user's OpenSSL
+the *only* OpenSSL in the process than play whack-a-mole with the
+cohabitation across every interpreter / distro combination.
+
+Build prerequisites (one-time, per system):
+
+| Platform | Install |
+| --- | --- |
+| Debian / Ubuntu | `apt install build-essential cmake ninja-build libssl-dev` |
+| macOS (Homebrew) | `brew install cmake ninja openssl@3` |
+
+Linux x86_64 / aarch64 and macOS arm64 (14.0+) are tested in CI on
+CPython 3.12 / 3.13 / 3.14. Intel Macs are skipped because Apple
+Silicon is the modern target; Windows is deferred — libdatachannel
+dynamically links OpenSSL DLLs there and the search-path setup is its
+own project.
 
 The Python↔C boundary uses [nanobind](https://github.com/wjakob/nanobind)'s
 stable-ABI mode (`Py_LIMITED_API`): libdatachannel and its static
-dependencies (usrsctp, libjuice, OpenSSL) link directly into the
-extension, and a single `cp312-abi3-<platform>` wheel per architecture
-covers every CPython 3.12+ interpreter — no per-Python-version build.
-The binding layer itself is deliberately thin: native trampolines route
-every libdatachannel callback through a single Python dispatcher, and
-the asyncio semantics live in the pure-Python wrapper on top, not in C++.
+dependencies (usrsctp, libjuice) link directly into the extension, and
+the resulting `cp312-abi3-<platform>` filename is loadable by every
+CPython 3.12+ interpreter — no per-Python-version build. The binding
+layer itself is deliberately thin: native trampolines route every
+libdatachannel callback through a single Python dispatcher, and the
+asyncio semantics live in the pure-Python wrapper on top, not in C++.
 
 ## Quickstart
 
