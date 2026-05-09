@@ -124,19 +124,67 @@ jobs:
           CIBW_TEST_COMMAND: >-
             AIOLIB_REQUIRE_NATIVE=1
             pytest {project}/tests -v -m "not stress"
-          # Skip tests on macOS runners — loopback UDP perms aren't
-          # reliable on hosted macOS. Linux wheel tests run the full
-          # smoke suite.
-          CIBW_TEST_SKIP: "*-macosx_*"
+          # ``cp314-*`` is excluded because the cibuildwheel cp314
+          # interpreter (a from-source CPython 3.14 baked into the
+          # manylinux_2_34 image) segfaults inside libdatachannel's ICE
+          # gathering on the very first ``test_ice_candidates_*`` test —
+          # while the same wheel passes the same test under stock
+          # CPython 3.14 (see the ``smoke_wheels`` job below). Until the
+          # upstream cibuildwheel/manylinux 3.14 image ships a stable
+          # interpreter, we keep the wheel-build green by skipping its
+          # in-container 3.14 tests and lean on ``smoke_wheels`` to
+          # cover that target.
+          # ``*-macosx_*`` skip survives because loopback UDP perms
+          # aren't reliable on hosted macOS runners.
+          CIBW_TEST_SKIP: "*-macosx_* cp314-*"
 
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.arch }}
           path: wheelhouse/*.whl
 
+  smoke_wheels:
+    # Re-test the just-built Linux wheels under stock CPython interpreters
+    # (actions/setup-python). Catches wheel-level regressions on Python
+    # versions whose cibuildwheel test environment we had to skip — at
+    # the moment that's CPython 3.14, where the in-container cp314
+    # interpreter from manylinux_2_34 segfaults inside libdatachannel
+    # but the same wheel passes the same suite on a stock 3.14.
+    name: Smoke-test wheel (Python ${{ matrix.python }}, ${{ matrix.arch }})
+    needs: [build_wheels]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+            python: "3.14"
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+            python: "3.14"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-${{ matrix.arch }}
+          path: wheelhouse
+      - name: Install wheel + smoke test
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio
+          # The wheel filename is abi3-tagged so a single wheel covers
+          # cp312+; install the manylinux artefact straight from the
+          # wheelhouse dir.
+          pip install wheelhouse/aiolibdatachannel-*-cp312-abi3-manylinux*.whl
+          AIOLIB_REQUIRE_NATIVE=1 pytest tests -v -m "not stress"
+
   publish:
     name: Publish to PyPI
-    needs: [build_sdist, build_wheels]
+    needs: [build_sdist, build_wheels, smoke_wheels]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     environment:
