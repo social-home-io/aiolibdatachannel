@@ -75,7 +75,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - uses: pypa/cibuildwheel@v2.21
+      # cibuildwheel v3 added the runtime images for CPython 3.14 + the
+      # AlmaLinux 9 (manylinux_2_34) base used below. v2.21 ships
+      # neither.
+      - uses: pypa/cibuildwheel@v3.4
         env:
           # cibuildwheel tars the project and runs pip inside a manylinux
           # container — git history isn't available there, so we forward
@@ -84,14 +87,23 @@ jobs:
           CIBW_ENVIRONMENT_PASS_LINUX: "SETUPTOOLS_SCM_PRETEND_VERSION"
           CIBW_ARCHS: ${{ matrix.arch }}
           # Nanobind's stable-ABI mode emits one cp312-abi3-<platform>
-          # wheel per (os, arch) that covers every CPython 3.12+.
-          # requires-python = ">=3.12" in pyproject.toml gates
-          # installation. cibuildwheel builds with 3.12 to produce that
-          # single wheel; the abi3 tag lets pip install it on 3.13+ too.
-          CIBW_BUILD: "cp312-*"
+          # wheel per (os, arch) that covers every CPython 3.12+. Listing
+          # cp312 / cp313 / cp314 explicitly doesn't multiply the wheels —
+          # cibuildwheel deduplicates by abi3 tag — but it does run the
+          # test command under each interpreter, which is the only thing
+          # that would have caught the OpenSSL 1.1 / 3.x cohabit crash
+          # that surfaced only on CPython 3.14.
+          CIBW_BUILD: "cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*-musllinux_*"
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          # AlmaLinux 9 (manylinux_2_34) ships OpenSSL 3.x. The previous
+          # manylinux_2_28 base baked in OpenSSL 1.1.1, which auditwheel
+          # bundled into the wheel; on hosts that also load the system
+          # OpenSSL 3 (Python's ``_ssl`` does, transitively), the
+          # libdatachannel static link would crash on the first
+          # ``PeerConnection`` constructor under CPython 3.14. Match the
+          # bundled OpenSSL to what modern hosts already run.
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_34
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
           CIBW_BEFORE_ALL_LINUX: "yum install -y openssl-devel"
           CIBW_BEFORE_ALL_MACOS: "brew install openssl@3"
           CIBW_ENVIRONMENT_MACOS: >-

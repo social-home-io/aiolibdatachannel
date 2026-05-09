@@ -75,7 +75,7 @@ jobs:
         # setup is a separate investment and we don't currently publish
         # Windows wheels either.
         os: [ubuntu-latest, macos-latest]
-        python: ["3.12", "3.13"]
+        python: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
         with:
