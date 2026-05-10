@@ -118,8 +118,8 @@ jobs:
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio pytest-timeout"
           # Smoke suite only — stress tests are skipped at this layer
           # because they reliably hang inside cibuildwheel's
-          # manylinux_2_28 docker container (the same tests complete
-          # in ~70 s natively on the same host runner). Suspected
+          # manylinux docker container (the same tests complete in
+          # ~70 s natively on the same host runner). Suspected
           # container-specific SCTP/thread interaction we don't want
           # to debug under release-time pressure. Stress coverage
           # still runs via the CI workflow's ``tests-stress`` job
@@ -128,20 +128,35 @@ jobs:
           # before the next release cut — just not on the release tag
           # itself.
           #
-          # ``--timeout=60`` (pytest-timeout) is the difference between
-          # "release stalls invisibly for 6 hours and we cancel" and
-          # "the offending test name + frames land in the wheel-build
-          # log within a minute". Loopback / shutdown-hygiene tests
-          # finish in <2 s on bare metal; the manylinux container
-          # occasionally hangs them on a kernel SCTP/thread
-          # interaction (see comment above), and 60 s is well over the
-          # natural ceiling so a real test never trips it.
-          # ``--timeout-method=thread`` so the timer fires even when
-          # the asyncio loop is blocked inside a native call.
+          # Two timeouts in series so a hung test doesn't burn the
+          # full 6-hour GitHub Actions ceiling:
+          #
+          # 1. ``pytest --timeout=60 --timeout-method=signal`` — fires
+          #    SIGALRM at the test process. Signal mode is used (not
+          #    thread mode) because the suspected hang is in
+          #    ``test_shutdown_hygiene.py``'s ``subprocess.communicate()``
+          #    call: that releases the GIL and blocks in C, so the
+          #    thread-mode watchdog's ``KeyboardInterrupt`` only fires
+          #    after the syscall returns. SIGALRM interrupts the
+          #    syscall directly, so the timeout actually triggers.
+          #    pytest-timeout dumps frames + the test name on fire,
+          #    so we get a name to investigate next time.
+          # 2. Shell-level ``timeout 600`` (10 min) — belt-and-braces
+          #    hard kill. If pytest-timeout still doesn't fire (e.g.
+          #    process is stuck in a kernel call signals can't
+          #    interrupt), the OS kills the process at 10 min total.
+          #    ``--kill-after=15`` upgrades to SIGKILL 15s later in
+          #    case the SIGTERM isn't picked up.
+          #
+          # Loopback / shutdown-hygiene tests finish in <2 s on bare
+          # metal; the per-test 60 s + the per-job 10 min are both
+          # well over the natural ceiling so a real test never trips
+          # them.
           CIBW_TEST_COMMAND: >-
             AIOLIB_REQUIRE_NATIVE=1
+            timeout --kill-after=15 600
             pytest {project}/tests -v -m "not stress"
-            --timeout=60 --timeout-method=thread
+            --timeout=60 --timeout-method=signal
           # macOS runners can't get reliable loopback UDP permissions
           # for the ICE-gathering tests, so test only on Linux. Linux
           # tests now include cp314 — the whole point of this layout
