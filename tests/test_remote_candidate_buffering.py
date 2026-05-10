@@ -34,7 +34,7 @@ if os.environ.get("AIOLIB_REQUIRE_NATIVE"):
         allow_module_level=True,
     )
 
-from aiolibdatachannel import PeerConnection  # noqa: E402
+from aiolibdatachannel import PeerConnection
 
 
 @pytest.mark.asyncio
