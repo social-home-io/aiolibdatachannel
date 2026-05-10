@@ -239,6 +239,11 @@ def add_remote_candidate(pc: int, candidate: str, mid: str | None = None) -> Non
     info = _pcs.get(pc)
     if info is None:
         raise RTCError("rtcAddRemoteCandidate: not available", ERR_NOT_AVAIL)
+    # Mirror libdatachannel's real ``RTC_ERR_INVALID`` (-2) when a
+    # candidate is offered before the remote description has been
+    # applied. Lets tests cover the buffering path in the wrapper.
+    if "remote_sdp" not in info:
+        raise RTCError("rtcAddRemoteCandidate: runtime failure (-2)", -2)
     info.setdefault("remote_candidates", []).append((candidate, mid or ""))
 
 

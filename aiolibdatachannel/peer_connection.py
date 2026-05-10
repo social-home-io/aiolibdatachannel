@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import AsyncIterator, Coroutine
 from dataclasses import dataclass
 from types import TracebackType
@@ -15,6 +16,8 @@ from .config import DataChannelOptions, RTCConfiguration
 from .data_channel import DataChannel
 from .enums import GatheringState, ICEState, RTCState, SignalingState
 from .exceptions import ConnectionClosedError, RTCError
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "DataChannelEvent",
@@ -170,6 +173,18 @@ class PeerConnection:
         self._ice_state = ICEState.NEW
         self._gathering_state = GatheringState.NEW
         self._signaling_state = SignalingState.STABLE
+
+        # ``add_remote_candidate`` raises ``RTCError`` if the native
+        # side hasn't applied a remote description yet (libdatachannel
+        # ``rtcAddRemoteCandidate`` returns ``RTC_ERR_INVALID``). The
+        # signaling layer routinely surfaces ICE candidates a beat
+        # ahead of the offer/answer they belong to (small window — the
+        # candidate-batch frame and the SDP frame may overlap on the
+        # wire). Buffer those locally and drain as soon as
+        # ``set_remote_description`` finishes so the caller doesn't
+        # need to coordinate ordering.
+        self._remote_description_set = asyncio.Event()
+        self._buffered_remote_candidates: list[tuple[str, str]] = []
         self._local_description: FutureSlot[LocalDescription] = FutureSlot(self._loop)
         self._gathering_complete: FutureSlot[None] = FutureSlot(self._loop)
 
@@ -363,10 +378,43 @@ class PeerConnection:
             sdp,
             type_,
         )
+        # Drain any candidates the signaling layer handed us before the
+        # SDP arrived. Both calls flow through the same executor, so by
+        # the time we get here the native side is ready to accept them.
+        self._remote_description_set.set()
+        if self._buffered_remote_candidates:
+            buffered = self._buffered_remote_candidates
+            self._buffered_remote_candidates = []
+            for cand, mid in buffered:
+                try:
+                    await self._loop.run_in_executor(
+                        None,
+                        self._native.add_remote_candidate,
+                        cand,
+                        mid,
+                    )
+                except Exception:
+                    # Each candidate is independent — log and keep
+                    # going, the same way ``add_remote_candidate``
+                    # would have if the caller had retried after the
+                    # SDP landed.
+                    logger.debug(
+                        "drained buffered remote candidate failed",
+                        exc_info=True,
+                    )
 
     async def add_remote_candidate(self, candidate: str, mid: str = "") -> None:
-        """Register an ICE candidate received from the remote peer."""
+        """Register an ICE candidate received from the remote peer.
 
+        If the remote description hasn't been applied yet the candidate
+        is buffered locally and forwarded to libdatachannel as soon as
+        :meth:`set_remote_description` completes — see the matching
+        comment on ``_buffered_remote_candidates`` in ``__init__``.
+        """
+
+        if not self._remote_description_set.is_set():
+            self._buffered_remote_candidates.append((candidate, mid))
+            return
         await self._loop.run_in_executor(
             None,
             self._native.add_remote_candidate,
