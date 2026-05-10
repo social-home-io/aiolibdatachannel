@@ -12,9 +12,29 @@ applies the SDP, then drains them in arrival order.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from aiolibdatachannel import PeerConnection, RTCError
+# These tests cover Python-side wrapper logic (the
+# ``add_remote_candidate`` buffer + ``set_remote_description``
+# drain). They reach into ``aiolibdatachannel._native._pcs`` /
+# ``_errors`` to assert ordering + injected-failure semantics —
+# both attributes only exist on the fake. The compiled extension
+# exposes neither.
+#
+# Skip *at module-import time* when running with the real native
+# build — otherwise collection itself fails because the import of
+# ``aiolibdatachannel`` triggers the C++ extension load. ``pytest``
+# evaluates ``pytestmark`` AFTER imports, so module-level imports
+# below are guarded by an explicit pre-check.
+if os.environ.get("AIOLIB_REQUIRE_NATIVE"):
+    pytest.skip(
+        "fake-only — pokes at _fake_native internals",
+        allow_module_level=True,
+    )
+
+from aiolibdatachannel import PeerConnection  # noqa: E402
 
 
 @pytest.mark.asyncio
@@ -93,8 +113,8 @@ async def test_drain_failure_logs_and_continues(caplog) -> None:
     """
     import logging
 
-    from aiolibdatachannel._native import _errors  # type: ignore[attr-defined]
     from aiolibdatachannel._native import (  # type: ignore[attr-defined]
+        _errors,  # type: ignore[attr-defined]
         _pcs,
     )
 
