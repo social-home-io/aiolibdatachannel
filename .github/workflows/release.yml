@@ -115,7 +115,7 @@ jobs:
           CIBW_ENVIRONMENT_MACOS: >-
             OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
             MACOSX_DEPLOYMENT_TARGET=14.0
-          CIBW_TEST_REQUIRES: "pytest pytest-asyncio"
+          CIBW_TEST_REQUIRES: "pytest pytest-asyncio pytest-timeout"
           # Smoke suite only — stress tests are skipped at this layer
           # because they reliably hang inside cibuildwheel's
           # manylinux_2_28 docker container (the same tests complete
@@ -127,9 +127,21 @@ jobs:
           # the host runner without docker, so regressions are caught
           # before the next release cut — just not on the release tag
           # itself.
+          #
+          # ``--timeout=60`` (pytest-timeout) is the difference between
+          # "release stalls invisibly for 6 hours and we cancel" and
+          # "the offending test name + frames land in the wheel-build
+          # log within a minute". Loopback / shutdown-hygiene tests
+          # finish in <2 s on bare metal; the manylinux container
+          # occasionally hangs them on a kernel SCTP/thread
+          # interaction (see comment above), and 60 s is well over the
+          # natural ceiling so a real test never trips it.
+          # ``--timeout-method=thread`` so the timer fires even when
+          # the asyncio loop is blocked inside a native call.
           CIBW_TEST_COMMAND: >-
             AIOLIB_REQUIRE_NATIVE=1
             pytest {project}/tests -v -m "not stress"
+            --timeout=60 --timeout-method=thread
           # macOS runners can't get reliable loopback UDP permissions
           # for the ICE-gathering tests, so test only on Linux. Linux
           # tests now include cp314 — the whole point of this layout
