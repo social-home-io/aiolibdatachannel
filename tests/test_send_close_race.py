@@ -32,11 +32,12 @@ if os.environ.get("AIOLIB_REQUIRE_NATIVE"):
         allow_module_level=True,
     )
 
-from aiolibdatachannel import ConnectionClosedError, PeerConnection
 from aiolibdatachannel._native import (  # type: ignore[attr-defined]
     _dcs,
     close_dc,
 )
+
+from aiolibdatachannel import ConnectionClosedError, PeerConnection
 
 
 @pytest.mark.asyncio
