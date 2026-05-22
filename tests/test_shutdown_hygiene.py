@@ -28,7 +28,7 @@ import textwrap
 
 import pytest
 
-pytestmark = pytest.mark.native
+pytestmark = [pytest.mark.native, pytest.mark.host_only]
 
 
 def _run(script: str, *, timeout: float = 20.0) -> subprocess.CompletedProcess[str]:

@@ -161,4 +161,5 @@ addopts = ["-ra", "--strict-markers", "--strict-config"]
 markers = [
     "native: test requires the compiled aiolibdatachannel._native extension (real libdatachannel handshake, not the in-memory fake)",
     "stress: long-running soak test (10s+); skipped by default, run with 'pytest -m stress' or via AIOLIB_STRESS=1",
+    "host_only: bare-metal-only test; auto-skipped inside cibuildwheel's manylinux container where subprocess/SCTP teardown intermittently deadlocks (issue #12). The tests-native CI job runs these on bare-metal Linux + macOS, so wheel-matrix coverage isn't lost.",
 ]

@@ -33,14 +33,24 @@ if not _REQUIRE_NATIVE:
 import pytest  # noqa: E402
 
 _RUN_STRESS = bool(os.environ.get("AIOLIB_STRESS"))
+# cibuildwheel sets ``CIBUILDWHEEL=1`` automatically inside its
+# manylinux container. ``test_shutdown_hygiene`` spawns child
+# interpreters via ``subprocess`` and the SCTP teardown in those
+# children intermittently deadlocks against the manylinux image's
+# kernel/userns boundary, hanging the wheel-build for the full
+# 6-hour ceiling. The test is about Python interpreter cleanup, not
+# manylinux specifics, so we skip it inside cibuildwheel and rely on
+# the bare-metal ``tests-native`` CI job for coverage. See issue #12.
+_IN_CIBW = bool(os.environ.get("CIBUILDWHEEL"))
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
-    """Filter ``@pytest.mark.native`` tests when the fake is active, and
-    ``@pytest.mark.stress`` tests unless explicitly opted in.
+    """Filter ``@pytest.mark.native`` tests when the fake is active,
+    ``@pytest.mark.stress`` tests unless explicitly opted in, and
+    ``@pytest.mark.host_only`` tests inside cibuildwheel.
 
     * The fake can't make a real DTLS handshake → native tests get
       skipped unless the caller set ``AIOLIB_REQUIRE_NATIVE=1``.
@@ -49,12 +59,17 @@ def pytest_collection_modifyitems(
       ``AIOLIB_STRESS=1`` is set or pytest was invoked with
       ``-m stress`` (in which case pytest's own marker filter takes
       over and we don't add our skip on top).
+    * ``host_only`` tests are skipped when running inside
+      cibuildwheel (``CIBUILDWHEEL=1`` — see issue #12).
     """
     skip_native = pytest.mark.skip(
         reason="requires real _native extension (run with AIOLIB_REQUIRE_NATIVE=1)",
     )
     skip_stress = pytest.mark.skip(
         reason="stress test — run with AIOLIB_STRESS=1 (or 'pytest -m stress')",
+    )
+    skip_host_only = pytest.mark.skip(
+        reason="host_only — skipped inside cibuildwheel manylinux container (issue #12)",
     )
     # If the user already passed ``-m stress`` pytest deselects everything
     # else for us; we only need to auto-skip when stress isn't the
@@ -70,6 +85,8 @@ def pytest_collection_modifyitems(
             and item.get_closest_marker("stress") is not None
         ):
             item.add_marker(skip_stress)
+        if _IN_CIBW and item.get_closest_marker("host_only") is not None:
+            item.add_marker(skip_host_only)
 
 
 @pytest.fixture(autouse=True)
