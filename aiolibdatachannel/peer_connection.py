@@ -357,15 +357,61 @@ class PeerConnection:
             raise RTCError("local description not available after gathering")
         return LocalDescription(sdp=sdp, type=kind)
 
+    async def restart_ice(self, *, trickle: bool = False) -> LocalDescription:
+        """Re-run ICE without dropping the existing PeerConnection.
+
+        ``trickle=False`` (the default) mirrors :meth:`create_offer`:
+        awaits the new ICE gathering cycle and returns the complete
+        inline-ICE SDP. ``trickle=True`` mirrors
+        :meth:`set_local_description`: returns the bare SDP as soon as
+        libdatachannel produces it; iterate :meth:`ice_candidates` to
+        forward new candidates as they are discovered.
+
+        libdatachannel decides whether this call performs a true ICE
+        restart (the PC has been previously connected) or builds a
+        fresh offer (never connected) based on its own state machine.
+        The only Python-side pre-condition is that ``close`` /
+        ``aclose`` has not run.
+
+        :raises ConnectionClosedError: if ``close`` / ``aclose`` ran.
+        :raises RTCError: ``trickle=False`` and the native layer
+            fails to produce an SDP after gathering completes.
+        """
+
+        if self._closed:
+            raise ConnectionClosedError("peer connection is closed")
+        self._local_description.reset()
+        if not trickle:
+            self._gathering_complete.reset()
+        while not self._ice_candidates.empty():
+            self._ice_candidates.get_nowait()
+        self._native.set_local_description("offer")
+        if trickle:
+            return await self._local_description.future
+        await self._gathering_complete.future
+        sdp = self._native.get_local_description()
+        kind = _coerce_sdp_type(self._native.get_local_description_type(), default="offer")
+        if sdp is None:
+            raise RTCError("local description not available after gathering")
+        return LocalDescription(sdp=sdp, type=kind)
+
     async def set_local_description(self, type_: SdpType | None = None) -> LocalDescription:
         """Generate and set the local description without waiting for ICE.
 
         Resolves as soon as the SDP is produced; use the ``ice_candidates``
         async iterator to forward candidates to the remote side as they
         are discovered.
+
+        Calling with ``type_=None`` on a previously-connected PC is the
+        W3C-spec form of ICE restart and is equivalent to
+        :meth:`restart_ice` (with ``trickle=True``).
         """
 
+        if self._closed:
+            raise ConnectionClosedError("peer connection is closed")
         self._local_description.reset()
+        while not self._ice_candidates.empty():
+            self._ice_candidates.get_nowait()
         self._native.set_local_description(type_)
         return await self._local_description.future
 
