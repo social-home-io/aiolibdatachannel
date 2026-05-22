@@ -97,6 +97,14 @@ class DataChannel:
         self._closed_slot.set(None)
         if not self._open_slot.future.done():
             self._open_slot.fail(ConnectionClosedError("channel closed before open"))
+        # Unblock any ``send(wait_for_drain=True)`` coroutine parked
+        # waiting for the low-water mark — without this, a sender whose
+        # buffer was above HWM when the channel closed hangs forever
+        # on an event that will never be set again. The send() awaiter
+        # re-checks ``_destroyed`` / ``is_closed()`` immediately after
+        # the wait and raises :class:`ConnectionClosedError` instead
+        # of attempting a send on the torn-down stream.
+        self._buffered_low_event.set()
         with contextlib.suppress(asyncio.QueueFull):
             self._recv_queue.put_nowait(_CLOSED_SENTINEL)
 
@@ -187,6 +195,15 @@ class DataChannel:
 
         if wait_for_drain and not self._buffered_low_event.is_set():
             await self._buffered_low_event.wait()
+            # ``_handle_closed`` sets ``_buffered_low_event`` on close
+            # to release waiters. Re-check the close flags before we
+            # try to push more bytes into a torn-down native handle;
+            # without this the next ``send_bytes`` raises an opaque
+            # RTCError from libdatachannel.
+            if self._destroyed or self._native.is_closed():
+                raise ConnectionClosedError(
+                    "channel closed while waiting to send",
+                )
 
         if isinstance(data, (bytes, bytearray, memoryview)):
             self._native.send_bytes(bytes(data))
