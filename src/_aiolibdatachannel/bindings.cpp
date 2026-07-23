@@ -237,6 +237,10 @@ void tr_log(rtcLogLevel level, const char *message) {
 // Every libdatachannel call that can block a libdatachannel worker thread
 // (delete, set_*_description, add_remote_candidate, send_message, close)
 // must release the GIL so the worker can acquire it inside the trampoline.
+// This also covers callback registration: rtcSet*Callback takes the channel's
+// internal callback mutex and, when the channel is already open, invokes the
+// callback synchronously. A worker thread holding that mutex mid-callback would
+// otherwise block on the GIL while we block on the mutex — a deadlock.
 // Using a helper keeps the release pattern consistent.
 
 template <typename F>
@@ -343,38 +347,52 @@ NB_MODULE(_native, m) {
     // it.  All trampolines route through the one Python dispatcher.
 
     m.def("set_local_description_callback", [](int pc, bool enable) {
-        check(rtcSetLocalDescriptionCallback(
-                  pc, enable ? tr_local_description : nullptr),
+        check(no_gil([=] {
+                  return rtcSetLocalDescriptionCallback(
+                      pc, enable ? tr_local_description : nullptr);
+              }),
               "rtcSetLocalDescriptionCallback");
     });
     m.def("set_local_candidate_callback", [](int pc, bool enable) {
-        check(rtcSetLocalCandidateCallback(
-                  pc, enable ? tr_local_candidate : nullptr),
+        check(no_gil([=] {
+                  return rtcSetLocalCandidateCallback(
+                      pc, enable ? tr_local_candidate : nullptr);
+              }),
               "rtcSetLocalCandidateCallback");
     });
     m.def("set_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetStateChangeCallback(
-                  pc, enable ? tr_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetStateChangeCallback(
+                      pc, enable ? tr_state_change : nullptr);
+              }),
               "rtcSetStateChangeCallback");
     });
     m.def("set_ice_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetIceStateChangeCallback(
-                  pc, enable ? tr_ice_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetIceStateChangeCallback(
+                      pc, enable ? tr_ice_state_change : nullptr);
+              }),
               "rtcSetIceStateChangeCallback");
     });
     m.def("set_gathering_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetGatheringStateChangeCallback(
-                  pc, enable ? tr_gathering_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetGatheringStateChangeCallback(
+                      pc, enable ? tr_gathering_state_change : nullptr);
+              }),
               "rtcSetGatheringStateChangeCallback");
     });
     m.def("set_signaling_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetSignalingStateChangeCallback(
-                  pc, enable ? tr_signaling_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetSignalingStateChangeCallback(
+                      pc, enable ? tr_signaling_state_change : nullptr);
+              }),
               "rtcSetSignalingStateChangeCallback");
     });
     m.def("set_data_channel_callback", [](int pc, bool enable) {
-        check(rtcSetDataChannelCallback(
-                  pc, enable ? tr_data_channel : nullptr),
+        check(no_gil([=] {
+                  return rtcSetDataChannelCallback(
+                      pc, enable ? tr_data_channel : nullptr);
+              }),
               "rtcSetDataChannelCallback");
     });
 
@@ -486,24 +504,34 @@ NB_MODULE(_native, m) {
     // ---- DataChannel callback registration ------------------------------
 
     m.def("set_dc_open_callback", [](int dc, bool enable) {
-        check(rtcSetOpenCallback(dc, enable ? tr_dc_open : nullptr),
+        check(no_gil([=] {
+                  return rtcSetOpenCallback(dc, enable ? tr_dc_open : nullptr);
+              }),
               "rtcSetOpenCallback");
     });
     m.def("set_dc_closed_callback", [](int dc, bool enable) {
-        check(rtcSetClosedCallback(dc, enable ? tr_dc_closed : nullptr),
+        check(no_gil([=] {
+                  return rtcSetClosedCallback(dc, enable ? tr_dc_closed : nullptr);
+              }),
               "rtcSetClosedCallback");
     });
     m.def("set_dc_error_callback", [](int dc, bool enable) {
-        check(rtcSetErrorCallback(dc, enable ? tr_dc_error : nullptr),
+        check(no_gil([=] {
+                  return rtcSetErrorCallback(dc, enable ? tr_dc_error : nullptr);
+              }),
               "rtcSetErrorCallback");
     });
     m.def("set_dc_message_callback", [](int dc, bool enable) {
-        check(rtcSetMessageCallback(dc, enable ? tr_dc_message : nullptr),
+        check(no_gil([=] {
+                  return rtcSetMessageCallback(dc, enable ? tr_dc_message : nullptr);
+              }),
               "rtcSetMessageCallback");
     });
     m.def("set_dc_buffered_amount_low_callback", [](int dc, bool enable) {
-        check(rtcSetBufferedAmountLowCallback(
-                  dc, enable ? tr_dc_buffered_amount_low : nullptr),
+        check(no_gil([=] {
+                  return rtcSetBufferedAmountLowCallback(
+                      dc, enable ? tr_dc_buffered_amount_low : nullptr);
+              }),
               "rtcSetBufferedAmountLowCallback");
     });
 
@@ -561,8 +589,9 @@ NB_MODULE(_native, m) {
     // ---- Logger ----------------------------------------------------------
 
     m.def("init_logger", [](int level, bool enable) {
-        rtcInitLogger(static_cast<rtcLogLevel>(level),
-                      enable ? tr_log : nullptr);
+        no_gil([=] {
+            rtcInitLogger(static_cast<rtcLogLevel>(level), enable ? tr_log : nullptr);
+        });
     });
 
     // ---- libdatachannel lifecycle ---------------------------------------
