@@ -111,8 +111,12 @@ def _fire(cb: Callable[..., None] | None, *args: Any) -> None:
 def _dispatch(kind: int, handle: int, *payload: Any) -> None:
     """Single entry point the C trampolines call into.
 
-    Runs with the GIL held (acquired inside the trampoline). Looks up
-    the owning wrapper, then fires the relevant stored callback.
+    Runs with the GIL held (acquired inside the trampoline), on a
+    libdatachannel worker thread or — for a callback registered against an
+    already-open handle — synchronously on the registering thread. Looks up
+    the owning wrapper, then fires the relevant stored callback. Callbacks
+    must not block: the caller may hold libdatachannel's internal callback
+    mutex.
     """
     if kind == _CB_LOCAL_DESCRIPTION:
         pc = _lookup_pc(handle)

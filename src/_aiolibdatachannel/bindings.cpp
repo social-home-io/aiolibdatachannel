@@ -237,7 +237,16 @@ void tr_log(rtcLogLevel level, const char *message) {
 // Every libdatachannel call that can block a libdatachannel worker thread
 // (delete, set_*_description, add_remote_candidate, send_message, close)
 // must release the GIL so the worker can acquire it inside the trampoline.
-// Using a helper keeps the release pattern consistent.
+// This also covers callback registration: rtcSet*Callback takes the channel's
+// internal callback mutex and, when the channel is already open, invokes the
+// callback synchronously. A worker thread holding that mutex mid-callback would
+// otherwise block on the GIL while we block on the mutex — a deadlock.
+// This is the ONE place in the file that releases the GIL — every blocking
+// rtc* call goes through it, so there is a single pattern to audit. Note the
+// call shape: `check(no_gil([&] { return rtc*(...); }), "ctx")`. The GIL is
+// re-acquired before check() runs, because check() raises a Python exception
+// and must not touch the interpreter without it. Never write
+// `no_gil([&] { check(...); })`.
 
 template <typename F>
 auto no_gil(F &&f) -> decltype(f()) {
@@ -296,11 +305,7 @@ NB_MODULE(_native, m) {
               cfg.mtu = mtu;
               cfg.maxMessageSize = max_message_size;
 
-              int handle;
-              {
-                  nb::gil_scoped_release release;
-                  handle = rtcCreatePeerConnection(&cfg);
-              }
+              int handle = no_gil([&] { return rtcCreatePeerConnection(&cfg); });
               return check(handle, "rtcCreatePeerConnection");
           },
           nb::arg("ice_servers"),
@@ -343,38 +348,52 @@ NB_MODULE(_native, m) {
     // it.  All trampolines route through the one Python dispatcher.
 
     m.def("set_local_description_callback", [](int pc, bool enable) {
-        check(rtcSetLocalDescriptionCallback(
-                  pc, enable ? tr_local_description : nullptr),
+        check(no_gil([=] {
+                  return rtcSetLocalDescriptionCallback(
+                      pc, enable ? tr_local_description : nullptr);
+              }),
               "rtcSetLocalDescriptionCallback");
     });
     m.def("set_local_candidate_callback", [](int pc, bool enable) {
-        check(rtcSetLocalCandidateCallback(
-                  pc, enable ? tr_local_candidate : nullptr),
+        check(no_gil([=] {
+                  return rtcSetLocalCandidateCallback(
+                      pc, enable ? tr_local_candidate : nullptr);
+              }),
               "rtcSetLocalCandidateCallback");
     });
     m.def("set_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetStateChangeCallback(
-                  pc, enable ? tr_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetStateChangeCallback(
+                      pc, enable ? tr_state_change : nullptr);
+              }),
               "rtcSetStateChangeCallback");
     });
     m.def("set_ice_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetIceStateChangeCallback(
-                  pc, enable ? tr_ice_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetIceStateChangeCallback(
+                      pc, enable ? tr_ice_state_change : nullptr);
+              }),
               "rtcSetIceStateChangeCallback");
     });
     m.def("set_gathering_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetGatheringStateChangeCallback(
-                  pc, enable ? tr_gathering_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetGatheringStateChangeCallback(
+                      pc, enable ? tr_gathering_state_change : nullptr);
+              }),
               "rtcSetGatheringStateChangeCallback");
     });
     m.def("set_signaling_state_change_callback", [](int pc, bool enable) {
-        check(rtcSetSignalingStateChangeCallback(
-                  pc, enable ? tr_signaling_state_change : nullptr),
+        check(no_gil([=] {
+                  return rtcSetSignalingStateChangeCallback(
+                      pc, enable ? tr_signaling_state_change : nullptr);
+              }),
               "rtcSetSignalingStateChangeCallback");
     });
     m.def("set_data_channel_callback", [](int pc, bool enable) {
-        check(rtcSetDataChannelCallback(
-                  pc, enable ? tr_data_channel : nullptr),
+        check(no_gil([=] {
+                  return rtcSetDataChannelCallback(
+                      pc, enable ? tr_data_channel : nullptr);
+              }),
               "rtcSetDataChannelCallback");
     });
 
@@ -388,23 +407,17 @@ NB_MODULE(_native, m) {
                   owned = nb::cast<std::string>(type);
                   arg = owned.c_str();
               }
-              int rc;
-              {
-                  nb::gil_scoped_release release;
-                  rc = rtcSetLocalDescription(pc, arg);
-              }
-              check(rc, "rtcSetLocalDescription");
+              check(no_gil([&] { return rtcSetLocalDescription(pc, arg); }),
+                    "rtcSetLocalDescription");
           },
           nb::arg("pc"), nb::arg("type") = nb::none());
 
     m.def("set_remote_description",
           [](int pc, const std::string &sdp, const std::string &type) {
-              int rc;
-              {
-                  nb::gil_scoped_release release;
-                  rc = rtcSetRemoteDescription(pc, sdp.c_str(), type.c_str());
-              }
-              check(rc, "rtcSetRemoteDescription");
+              check(no_gil([&] {
+                        return rtcSetRemoteDescription(pc, sdp.c_str(), type.c_str());
+                    }),
+                    "rtcSetRemoteDescription");
           });
 
     m.def("add_remote_candidate",
@@ -415,12 +428,10 @@ NB_MODULE(_native, m) {
                   owned = nb::cast<std::string>(mid);
                   mid_arg = owned.c_str();
               }
-              int rc;
-              {
-                  nb::gil_scoped_release release;
-                  rc = rtcAddRemoteCandidate(pc, candidate.c_str(), mid_arg);
-              }
-              check(rc, "rtcAddRemoteCandidate");
+              check(no_gil([&] {
+                        return rtcAddRemoteCandidate(pc, candidate.c_str(), mid_arg);
+                    }),
+                    "rtcAddRemoteCandidate");
           },
           nb::arg("pc"), nb::arg("candidate"), nb::arg("mid") = nb::none());
 
@@ -455,11 +466,9 @@ NB_MODULE(_native, m) {
               init.manualStream = manual_stream;
               init.stream = static_cast<uint16_t>(stream);
 
-              int handle;
-              {
-                  nb::gil_scoped_release release;
-                  handle = rtcCreateDataChannelEx(pc, label.c_str(), &init);
-              }
+              int handle = no_gil([&] {
+                  return rtcCreateDataChannelEx(pc, label.c_str(), &init);
+              });
               return check(handle, "rtcCreateDataChannelEx");
           },
           nb::arg("pc"), nb::arg("label"),
@@ -486,24 +495,34 @@ NB_MODULE(_native, m) {
     // ---- DataChannel callback registration ------------------------------
 
     m.def("set_dc_open_callback", [](int dc, bool enable) {
-        check(rtcSetOpenCallback(dc, enable ? tr_dc_open : nullptr),
+        check(no_gil([=] {
+                  return rtcSetOpenCallback(dc, enable ? tr_dc_open : nullptr);
+              }),
               "rtcSetOpenCallback");
     });
     m.def("set_dc_closed_callback", [](int dc, bool enable) {
-        check(rtcSetClosedCallback(dc, enable ? tr_dc_closed : nullptr),
+        check(no_gil([=] {
+                  return rtcSetClosedCallback(dc, enable ? tr_dc_closed : nullptr);
+              }),
               "rtcSetClosedCallback");
     });
     m.def("set_dc_error_callback", [](int dc, bool enable) {
-        check(rtcSetErrorCallback(dc, enable ? tr_dc_error : nullptr),
+        check(no_gil([=] {
+                  return rtcSetErrorCallback(dc, enable ? tr_dc_error : nullptr);
+              }),
               "rtcSetErrorCallback");
     });
     m.def("set_dc_message_callback", [](int dc, bool enable) {
-        check(rtcSetMessageCallback(dc, enable ? tr_dc_message : nullptr),
+        check(no_gil([=] {
+                  return rtcSetMessageCallback(dc, enable ? tr_dc_message : nullptr);
+              }),
               "rtcSetMessageCallback");
     });
     m.def("set_dc_buffered_amount_low_callback", [](int dc, bool enable) {
-        check(rtcSetBufferedAmountLowCallback(
-                  dc, enable ? tr_dc_buffered_amount_low : nullptr),
+        check(no_gil([=] {
+                  return rtcSetBufferedAmountLowCallback(
+                      dc, enable ? tr_dc_buffered_amount_low : nullptr);
+              }),
               "rtcSetBufferedAmountLowCallback");
     });
 
@@ -512,22 +531,14 @@ NB_MODULE(_native, m) {
     m.def("send_bytes", [](int dc, nb::bytes data) {
         const char *buf = data.c_str();
         int size = static_cast<int>(data.size());
-        int rc;
-        {
-            nb::gil_scoped_release release;
-            rc = rtcSendMessage(dc, buf, size);
-        }
-        check(rc, "rtcSendMessage");
+        check(no_gil([&] { return rtcSendMessage(dc, buf, size); }),
+              "rtcSendMessage");
     });
 
     m.def("send_text", [](int dc, const std::string &text) {
-        int rc;
-        {
-            nb::gil_scoped_release release;
-            // size < 0 → null-terminated string.
-            rc = rtcSendMessage(dc, text.c_str(), -1);
-        }
-        check(rc, "rtcSendMessage");
+        // size < 0 → null-terminated string.
+        check(no_gil([&] { return rtcSendMessage(dc, text.c_str(), -1); }),
+              "rtcSendMessage");
     });
 
     m.def("is_open", [](int dc) { return bool(rtcIsOpen(dc)); });
@@ -561,13 +572,17 @@ NB_MODULE(_native, m) {
     // ---- Logger ----------------------------------------------------------
 
     m.def("init_logger", [](int level, bool enable) {
-        rtcInitLogger(static_cast<rtcLogLevel>(level),
-                      enable ? tr_log : nullptr);
+        no_gil([=] {
+            rtcInitLogger(static_cast<rtcLogLevel>(level), enable ? tr_log : nullptr);
+        });
     });
 
     // ---- libdatachannel lifecycle ---------------------------------------
 
-    m.def("preload", []() { rtcPreload(); });
+    m.def("preload", []() {
+        // Spins up the worker thread pool — can block for tens of ms.
+        no_gil([] { rtcPreload(); });
+    });
     m.def("cleanup", []() {
         no_gil([] { rtcCleanup(); });
     });

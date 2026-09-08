@@ -1,8 +1,9 @@
 """Helpers for bridging libdatachannel's worker threads onto an asyncio loop.
 
 Callbacks fired by the native extension run on libdatachannel's internal
-worker threads (with the GIL held). They must not touch asyncio state
-directly; instead they schedule work onto the loop via
+worker threads, or — when a callback is registered against an already-open
+channel — synchronously on the caller's thread. They must not touch asyncio
+state directly; instead they schedule work onto the loop via
 ``loop.call_soon_threadsafe``. These helpers centralise the edge cases:
 
 * The loop may have been closed by the time the callback fires.
