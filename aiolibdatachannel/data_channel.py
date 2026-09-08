@@ -58,8 +58,13 @@ class DataChannel:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._teardown_task: asyncio.Task[None] | None = None
 
-        # Register native callbacks. Each trampoline runs on a libdatachannel
-        # worker thread with the GIL held; we marshal onto the loop.
+        # Register native callbacks. A trampoline usually runs on a
+        # libdatachannel worker thread, but registering against an
+        # already-open channel fires it SYNCHRONOUSLY on this thread from
+        # inside set_on_*. Either way the callbacks below only
+        # ``call_soon_threadsafe`` onto the loop, so both paths are safe —
+        # and a callback must never block, or it would stall the worker
+        # while it holds the channel's internal callback mutex.
         self._native.set_on_open(self._cb_open)
         self._native.set_on_closed(self._cb_closed)
         self._native.set_on_error(self._cb_error)

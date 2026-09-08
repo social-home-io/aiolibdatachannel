@@ -241,7 +241,12 @@ void tr_log(rtcLogLevel level, const char *message) {
 // internal callback mutex and, when the channel is already open, invokes the
 // callback synchronously. A worker thread holding that mutex mid-callback would
 // otherwise block on the GIL while we block on the mutex — a deadlock.
-// Using a helper keeps the release pattern consistent.
+// This is the ONE place in the file that releases the GIL — every blocking
+// rtc* call goes through it, so there is a single pattern to audit. Note the
+// call shape: `check(no_gil([&] { return rtc*(...); }), "ctx")`. The GIL is
+// re-acquired before check() runs, because check() raises a Python exception
+// and must not touch the interpreter without it. Never write
+// `no_gil([&] { check(...); })`.
 
 template <typename F>
 auto no_gil(F &&f) -> decltype(f()) {
@@ -300,11 +305,7 @@ NB_MODULE(_native, m) {
               cfg.mtu = mtu;
               cfg.maxMessageSize = max_message_size;
 
-              int handle;
-              {
-                  nb::gil_scoped_release release;
-                  handle = rtcCreatePeerConnection(&cfg);
-              }
+              int handle = no_gil([&] { return rtcCreatePeerConnection(&cfg); });
               return check(handle, "rtcCreatePeerConnection");
           },
           nb::arg("ice_servers"),
@@ -406,23 +407,17 @@ NB_MODULE(_native, m) {
                   owned = nb::cast<std::string>(type);
                   arg = owned.c_str();
               }
-              int rc;
-              {
-                  nb::gil_scoped_release release;
-                  rc = rtcSetLocalDescription(pc, arg);
-              }
-              check(rc, "rtcSetLocalDescription");
+              check(no_gil([&] { return rtcSetLocalDescription(pc, arg); }),
+                    "rtcSetLocalDescription");
           },
           nb::arg("pc"), nb::arg("type") = nb::none());
 
     m.def("set_remote_description",
           [](int pc, const std::string &sdp, const std::string &type) {
-              int rc;
-              {
-                  nb::gil_scoped_release release;
-                  rc = rtcSetRemoteDescription(pc, sdp.c_str(), type.c_str());
-              }
-              check(rc, "rtcSetRemoteDescription");
+              check(no_gil([&] {
+                        return rtcSetRemoteDescription(pc, sdp.c_str(), type.c_str());
+                    }),
+                    "rtcSetRemoteDescription");
           });
 
     m.def("add_remote_candidate",
@@ -433,12 +428,10 @@ NB_MODULE(_native, m) {
                   owned = nb::cast<std::string>(mid);
                   mid_arg = owned.c_str();
               }
-              int rc;
-              {
-                  nb::gil_scoped_release release;
-                  rc = rtcAddRemoteCandidate(pc, candidate.c_str(), mid_arg);
-              }
-              check(rc, "rtcAddRemoteCandidate");
+              check(no_gil([&] {
+                        return rtcAddRemoteCandidate(pc, candidate.c_str(), mid_arg);
+                    }),
+                    "rtcAddRemoteCandidate");
           },
           nb::arg("pc"), nb::arg("candidate"), nb::arg("mid") = nb::none());
 
@@ -473,11 +466,9 @@ NB_MODULE(_native, m) {
               init.manualStream = manual_stream;
               init.stream = static_cast<uint16_t>(stream);
 
-              int handle;
-              {
-                  nb::gil_scoped_release release;
-                  handle = rtcCreateDataChannelEx(pc, label.c_str(), &init);
-              }
+              int handle = no_gil([&] {
+                  return rtcCreateDataChannelEx(pc, label.c_str(), &init);
+              });
               return check(handle, "rtcCreateDataChannelEx");
           },
           nb::arg("pc"), nb::arg("label"),
@@ -540,22 +531,14 @@ NB_MODULE(_native, m) {
     m.def("send_bytes", [](int dc, nb::bytes data) {
         const char *buf = data.c_str();
         int size = static_cast<int>(data.size());
-        int rc;
-        {
-            nb::gil_scoped_release release;
-            rc = rtcSendMessage(dc, buf, size);
-        }
-        check(rc, "rtcSendMessage");
+        check(no_gil([&] { return rtcSendMessage(dc, buf, size); }),
+              "rtcSendMessage");
     });
 
     m.def("send_text", [](int dc, const std::string &text) {
-        int rc;
-        {
-            nb::gil_scoped_release release;
-            // size < 0 → null-terminated string.
-            rc = rtcSendMessage(dc, text.c_str(), -1);
-        }
-        check(rc, "rtcSendMessage");
+        // size < 0 → null-terminated string.
+        check(no_gil([&] { return rtcSendMessage(dc, text.c_str(), -1); }),
+              "rtcSendMessage");
     });
 
     m.def("is_open", [](int dc) { return bool(rtcIsOpen(dc)); });
@@ -596,7 +579,10 @@ NB_MODULE(_native, m) {
 
     // ---- libdatachannel lifecycle ---------------------------------------
 
-    m.def("preload", []() { rtcPreload(); });
+    m.def("preload", []() {
+        // Spins up the worker thread pool — can block for tens of ms.
+        no_gil([] { rtcPreload(); });
+    });
     m.def("cleanup", []() {
         no_gil([] { rtcCleanup(); });
     });
