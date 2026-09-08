@@ -1,0 +1,149 @@
+name: Release — draft
+
+# Keeps a draft GitHub Release permanently in sync with the merge backlog,
+# so cutting a release is one click rather than a remembered ritual.
+#
+# Entry points:
+#
+#  * ``push: branches: [main]`` — every merge to main auto-refreshes the
+#    draft for today's CalVer date. Each run first deletes EVERY open draft
+#    release (a draft is by contract the auto-generated view — a
+#    hand-polished one should have been published), then recreates today's
+#    so the notes always reflect the latest merged set AND no stale draft
+#    from an earlier, never-published day can accumulate.
+#  * ``workflow_dispatch`` — manual override. Same logic, plus an optional
+#    ``date`` input for back-dating a draft (e.g. cutting a release for
+#    yesterday's merges if the auto-run was missed).
+#
+# WHY THIS IS SAFE TO RE-RUN: a draft release does not create its git tag.
+# GitHub only creates the tag when the draft is published. Since
+# ``release.yml`` triggers on ``push: tags: ["*"]``, a draft never fires it
+# — so this workflow can churn all day at zero cost.
+#
+# Publishing the draft (in the UI, or ``gh release edit <tag>
+# --draft=false``) is what creates the CalVer tag, and THAT tag push is
+# what fires ``release.yml`` → sdist + cp312/cp313/cp314 wheels → PyPI via
+# OIDC trusted publishing. setuptools-scm reads the pushed tag and bakes it
+# into the artifacts, so the tag IS the version — there is nothing to edit
+# in ``pyproject.toml``.
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Release date (YYYY-MM-DD). Defaults to today UTC."
+        required: false
+        type: string
+  push:
+    branches: [main]
+
+# Two merges seconds apart would otherwise race two draft-creation runs
+# against the same version. Group by branch so the latest run wins, and
+# cancel any in-flight refresh.
+concurrency:
+  group: release-draft-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # creating a draft release needs write
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    steps:
+      # No submodules: this job only reads git tags and talks to the
+      # releases API — it never builds the extension.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute next CalVer tag
+        id: ver
+        env:
+          INPUT_DATE: ${{ inputs.date }}
+        run: |
+          set -euo pipefail
+          d="${INPUT_DATE:-$(date -u +%Y-%m-%d)}"
+          y=$(date -d "$d" +%Y)
+          m=$(date -d "$d" +%-m)   # %-m / %-d strip leading zeros so we get
+          day=$(date -d "$d" +%-d) # 2026.5.13, not 2026.05.13
+          base="${y}.${m}.${day}"
+          existing=$(git tag -l "${base}" "${base}.*" | sort -V || true)
+          if [ -z "$existing" ]; then
+            version="$base"
+          else
+            highest=$(echo "$existing" | tail -n 1)
+            if [ "$highest" = "$base" ]; then
+              version="${base}.1"
+            else
+              n="${highest##*.}"
+              version="${base}.$((n + 1))"
+            fi
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Computed version: \`$version\`"
+            echo
+            echo "### Existing same-day tags"
+            if [ -z "$existing" ]; then
+              echo "_(none — this is the first release of the day)_"
+            else
+              echo '```'
+              echo "$existing"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create or refresh the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Anchor the auto-generated diff to the most recent PUBLISHED
+          # release. ``gh release view`` with no arg returns the latest
+          # non-draft release, which is what we want: this repo carries at
+          # least one stray tag with no release behind it (2026.9.5, a
+          # yanked mis-release), and lexical tag sorting would misorder
+          # CalVer anyway (``2026.5.22`` vs ``2026.5.7``).
+          prev=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+
+          # Delete EVERY open draft before recreating today's. Deleting only
+          # the draft whose name == "$VERSION" would orphan a previous day's
+          # draft whenever the date rolled over without a publish, and they
+          # would pile up. A draft is by contract the auto-generated view, so
+          # sweeping them all keeps exactly one open and self-heals a
+          # backlog. ``--generate-notes`` rebuilds the body deterministically
+          # from merged PRs, so nothing hand-typed is at risk.
+          #
+          # Target by release *id*, never by tag name: a leftover draft can
+          # share a tag with an already-published release, and
+          # ``gh release delete <tag>`` could remove the published one.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '.[] | select(.draft) | .id' \
+          | while read -r id; do
+              [ -n "$id" ] || continue
+              echo "Deleting stale draft release id=$id"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/$id"
+            done
+
+          args=(
+            "$VERSION"
+            --target main
+            --title "$VERSION"
+            --generate-notes
+            --draft
+          )
+          if [ -n "$prev" ]; then
+            args+=(--notes-start-tag "$prev")
+          fi
+          gh release create "${args[@]}"
+          url=$(gh release view "$VERSION" --json url -q .url)
+          {
+            echo
+            echo "### Draft release"
+            echo "Ready to review: $url"
+            echo
+            echo "Polish the notes in the UI, then click **Publish release**."
+            echo "That creates the \`$VERSION\` tag, and the tag push is what fires \`release.yml\` — sdist + wheels → PyPI."
+          } >> "$GITHUB_STEP_SUMMARY"
