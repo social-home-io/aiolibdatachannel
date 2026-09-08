@@ -2,7 +2,7 @@
 # Update the bundled libdatachannel submodule to a specific release tag.
 #
 # Usage: scripts/update-libdatachannel.sh <tag>
-# Example: scripts/update-libdatachannel.sh v0.24.3
+# Example: scripts/update-libdatachannel.sh v0.24.5
 #
 # After this runs:
 #   1. the submodule is checked out at <tag> with its own submodules synced;
