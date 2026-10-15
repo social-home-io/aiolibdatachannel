@@ -92,7 +92,7 @@ Only one backend may be enabled at a time.
 Use the helper script with the target tag:
 
 ```bash
-scripts/update-libdatachannel.sh v0.24.5
+scripts/update-libdatachannel.sh v0.24.6
 ```
 
 The script:
@@ -108,7 +108,7 @@ After it runs, **rebuild and re-test** before committing:
 ```bash
 pip install -e . --force-reinstall --no-build-isolation
 pytest
-git commit -m "Bump libdatachannel to v0.24.5"
+git commit -m "Bump libdatachannel to v0.24.6"
 ```
 
 The CI release workflow picks up whatever is committed — no extra action
