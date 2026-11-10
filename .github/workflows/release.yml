@@ -75,9 +75,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      # cibuildwheel v3 added the runtime images for CPython 3.14 + the
-      # AlmaLinux 9 (manylinux_2_34) base used below. v2.21 ships
-      # neither.
       # The deployment target must match the runner's macOS major
       # version: the Homebrew openssl@3 bottle is built for the host OS
       # and delocate refuses to downgrade its minimum version. Computed
@@ -90,6 +87,9 @@ jobs:
           echo "MACOSX_DEPLOYMENT_TARGET=${target}" >> "$GITHUB_ENV"
           echo "MACOSX_DEPLOYMENT_TARGET=${target}"
 
+      # cibuildwheel v3 added the runtime images for CPython 3.14 + the
+      # AlmaLinux 9 (manylinux_2_34) base used below. v2.21 ships
+      # neither.
       - uses: pypa/cibuildwheel@v3.4
         env:
           # cibuildwheel tars the project and runs pip inside a manylinux
