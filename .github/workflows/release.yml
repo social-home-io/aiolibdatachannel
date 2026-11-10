@@ -78,6 +78,18 @@ jobs:
       # cibuildwheel v3 added the runtime images for CPython 3.14 + the
       # AlmaLinux 9 (manylinux_2_34) base used below. v2.21 ships
       # neither.
+      # The deployment target must match the runner's macOS major
+      # version: the Homebrew openssl@3 bottle is built for the host OS
+      # and delocate refuses to downgrade its minimum version. Computed
+      # here (not in CIBW_ENVIRONMENT) so we use a real shell, not
+      # cibuildwheel's restricted parser.
+      - name: Set macOS deployment target
+        if: runner.os == 'macOS'
+        run: |
+          target="$(sw_vers -productVersion | cut -d. -f1).0"
+          echo "MACOSX_DEPLOYMENT_TARGET=${target}" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=${target}"
+
       - uses: pypa/cibuildwheel@v3.4
         env:
           # cibuildwheel tars the project and runs pip inside a manylinux
@@ -112,12 +124,9 @@ jobs:
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
           CIBW_BEFORE_ALL_LINUX: "yum install -y openssl-devel"
           CIBW_BEFORE_ALL_MACOS: "brew install openssl@3"
-          # The deployment target must match the runner's macOS major
-          # version: the Homebrew openssl@3 bottle is built for the host
-          # OS and delocate refuses to downgrade its minimum version.
           CIBW_ENVIRONMENT_MACOS: >-
             OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
-            MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productMajorVersion).0
+            MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio pytest-timeout"
           # Smoke suite only — stress tests are skipped at this layer
           # because they reliably hang inside cibuildwheel's
