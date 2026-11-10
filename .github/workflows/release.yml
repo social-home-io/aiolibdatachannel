@@ -54,10 +54,10 @@ jobs:
           - os: ubuntu-24.04-arm
             arch: aarch64
           # macOS arm64 only. Intel Mac (x86_64) is skipped — modern
-          # Macs are all Apple Silicon. The deployment target is 14.0
-          # because that's the minimum macOS the Homebrew openssl@3
-          # bottle ships with; delocate refuses to downgrade it.
-          - os: macos-14
+          # Macs are all Apple Silicon. Track macos-latest: GitHub retires
+          # pinned images (macos-14 is gone), and the deployment target
+          # below follows the runner's major version automatically.
+          - os: macos-latest
             arch: arm64
           # Windows support is deferred — the bundled libdatachannel
           # dynamically links OpenSSL's DLLs and we haven't wired up the
@@ -112,9 +112,12 @@ jobs:
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_34
           CIBW_BEFORE_ALL_LINUX: "yum install -y openssl-devel"
           CIBW_BEFORE_ALL_MACOS: "brew install openssl@3"
+          # The deployment target must match the runner's macOS major
+          # version: the Homebrew openssl@3 bottle is built for the host
+          # OS and delocate refuses to downgrade its minimum version.
           CIBW_ENVIRONMENT_MACOS: >-
             OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
-            MACOSX_DEPLOYMENT_TARGET=14.0
+            MACOSX_DEPLOYMENT_TARGET=$(sw_vers -productMajorVersion).0
           CIBW_TEST_REQUIRES: "pytest pytest-asyncio pytest-timeout"
           # Smoke suite only — stress tests are skipped at this layer
           # because they reliably hang inside cibuildwheel's
