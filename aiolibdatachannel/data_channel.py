@@ -51,6 +51,9 @@ class DataChannel:
         self._closed_slot: FutureSlot[None] = FutureSlot(loop)
         self._buffered_low_event = asyncio.Event()
         self._buffered_low_event.set()
+        # libdatachannel has no getter for the threshold; mirror it here.
+        # Its default is 0.
+        self._buffered_low_threshold = 0
         self._recv_queue: asyncio.Queue[bytes | str | object] = asyncio.Queue(
             maxsize=recv_buffer,
         )
@@ -171,6 +174,11 @@ class DataChannel:
         """Emit ``buffered_amount_low`` when the send buffer drops below ``amount``."""
 
         self._native.set_buffered_amount_low_threshold(amount)
+        self._buffered_low_threshold = amount
+        # Raising the threshold to or above what is buffered can never
+        # produce a from-above crossing, so release any waiter here.
+        if self._native.buffered_amount() <= amount:
+            self._buffered_low_event.set()
 
     async def wait_open(self) -> None:
         """Resolve when the channel is open, or raise if it fails to open."""
@@ -217,8 +225,18 @@ class DataChannel:
         else:
             raise TypeError(f"send() expected bytes or str, got {type(data).__name__}")
 
-        # Reset the low-water flag so the next oversized send blocks.
-        if self._buffered_low_event.is_set() and self._native.buffered_amount() > 0:
+        # Block the next send only while the buffer is ABOVE the
+        # threshold. libdatachannel fires ``buffered_amount_low`` only
+        # when the amount crosses the threshold from above, so clearing
+        # at or below it would wait for a callback that never comes.
+        # No lost wakeup: the native amount is updated before the
+        # callback fires, and the callback only schedules ``set()`` onto
+        # this loop, so a crossing after this read always lands after
+        # the ``clear()``.
+        if (
+            self._buffered_low_event.is_set()
+            and self._native.buffered_amount() > self._buffered_low_threshold
+        ):
             self._buffered_low_event.clear()
 
     async def recv(self) -> bytes | str:

@@ -81,3 +81,50 @@ async def test_state_progresses_to_closed() -> None:
             return
         await asyncio.sleep(0.01)
     # Terminal state not strictly required (close is abrupt); passing is OK.
+
+
+@pytest.mark.asyncio
+async def test_send_after_drain_below_threshold_does_not_hang() -> None:
+    """Regression: with a low-water threshold above the buffered amount,
+    the buffer drains to 0 without crossing it from above, so
+    libdatachannel never fires ``buffered_amount_low``. The next
+    ``send(wait_for_drain=True)`` used to wait forever on that callback.
+    """
+
+    cfg = RTCConfiguration()
+    async with PeerConnection(cfg) as offerer, PeerConnection(cfg) as answerer:
+        tx = await offerer.create_data_channel("drain")
+        offerer.spawn_task(_forward(offerer, answerer))
+        answerer.spawn_task(_forward(answerer, offerer))
+
+        offer = await offerer.set_local_description("offer")
+        await answerer.set_remote_description(offer.sdp, offer.type)
+        answer = await answerer.set_local_description("answer")
+        await offerer.set_remote_description(answer.sdp, answer.type)
+
+        rx = await asyncio.wait_for(answerer.accept_data_channel(), timeout=10.0)
+        await asyncio.wait_for(tx.wait_open(), timeout=10.0)
+        await asyncio.wait_for(rx.wait_open(), timeout=10.0)
+
+        # Threshold above anything this test ever buffers. On loopback
+        # usrsctp takes ~1 MiB before libdatachannel buffers anything, so
+        # a 4 MiB burst usually leaves bytes buffered (> 0, < threshold) when the
+        # final default send runs — the case that cleared the drain
+        # event with no from-above crossing left to set it again.
+        tx.set_buffered_amount_low_threshold(64 * 1024 * 1024)
+        frame = b"x" * 4096
+        count = 1024
+        for _ in range(count - 1):
+            await tx.send(frame, wait_for_drain=False)
+        await asyncio.wait_for(tx.send(frame), timeout=5.0)
+        for _ in range(count):
+            assert await asyncio.wait_for(rx.recv(), timeout=5.0) == frame
+
+        for _ in range(500):
+            if tx.buffered_amount == 0:
+                break
+            await asyncio.sleep(0.01)
+        assert tx.buffered_amount == 0
+
+        await asyncio.wait_for(tx.send(b"next"), timeout=5.0)
+        assert await asyncio.wait_for(rx.recv(), timeout=5.0) == b"next"
