@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Coroutine
+import threading
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from types import TracebackType
 from typing import Any, Literal, Self, TypeVar, cast, get_args
@@ -206,6 +207,10 @@ class PeerConnection:
         self._closed_event: asyncio.Event = asyncio.Event()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._teardown_task: asyncio.Task[None] | None = None
+        # One future per native call handed to an executor thread, done
+        # once that thread is out of the native layer (or never entered
+        # it). ``_teardown`` waits for all of them before the delete.
+        self._native_calls: set[asyncio.Future[None]] = set()
 
         # Wire up native callbacks.
         self._native.set_on_local_description(self._cb_local_description)
@@ -369,15 +374,56 @@ class PeerConnection:
         self._native.set_local_description(type_)
         return await self._local_description.future
 
+    async def _run_native(self, fn: Callable[..., None], *args: Any) -> None:
+        """Run one blocking native call in an executor thread.
+
+        ``close()`` deletes the native handle from another executor
+        thread, so ``_teardown`` waits for every call that is already in
+        one — tracked here until that thread is out of the native layer.
+        That holds even when the awaiting task is cancelled: a running
+        executor job cannot be. A call that had not started by then never
+        enters the native layer. Raises :class:`ConnectionClosedError`
+        once the connection is closed.
+        """
+
+        if self._closed:
+            raise ConnectionClosedError("peer connection is closed")
+        loop = self._loop
+        done: asyncio.Future[None] = loop.create_future()
+        self._native_calls.add(done)
+        done.add_done_callback(self._native_calls.discard)
+        lock = threading.Lock()
+        state = {"started": False, "skipped": False}
+
+        def _finish() -> None:
+            if not done.done():
+                done.set_result(None)
+
+        def job() -> None:
+            with lock:
+                if state["skipped"]:
+                    return
+                state["started"] = True
+            try:
+                fn(*args)
+            finally:
+                with contextlib.suppress(RuntimeError):  # loop already closed
+                    loop.call_soon_threadsafe(_finish)
+
+        try:
+            await loop.run_in_executor(None, job)
+        except asyncio.CancelledError:
+            with lock:
+                if not state["started"]:
+                    # Not started: it never will touch the native layer.
+                    state["skipped"] = True
+                    _finish()
+            raise
+
     async def set_remote_description(self, sdp: str, type_: SdpType) -> None:
         """Apply an SDP offer/answer received from the remote peer."""
 
-        await self._loop.run_in_executor(
-            None,
-            self._native.set_remote_description,
-            sdp,
-            type_,
-        )
+        await self._run_native(self._native.set_remote_description, sdp, type_)
         # Drain any candidates the signaling layer handed us before the
         # SDP arrived. Both calls flow through the same executor, so by
         # the time we get here the native side is ready to accept them.
@@ -387,12 +433,7 @@ class PeerConnection:
             self._buffered_remote_candidates = []
             for cand, mid in buffered:
                 try:
-                    await self._loop.run_in_executor(
-                        None,
-                        self._native.add_remote_candidate,
-                        cand,
-                        mid,
-                    )
+                    await self._run_native(self._native.add_remote_candidate, cand, mid)
                 except Exception:
                     # Each candidate is independent — log and keep
                     # going, the same way ``add_remote_candidate``
@@ -412,15 +453,12 @@ class PeerConnection:
         comment on ``_buffered_remote_candidates`` in ``__init__``.
         """
 
+        if self._closed:
+            raise ConnectionClosedError("peer connection is closed")
         if not self._remote_description_set.is_set():
             self._buffered_remote_candidates.append((candidate, mid))
             return
-        await self._loop.run_in_executor(
-            None,
-            self._native.add_remote_candidate,
-            candidate,
-            mid,
-        )
+        await self._run_native(self._native.add_remote_candidate, candidate, mid)
 
     @property
     def local_description(self) -> LocalDescription | None:
@@ -612,6 +650,10 @@ class PeerConnection:
             if self._tasks:
                 # Snapshot: the set mutates via add_done_callback.
                 await asyncio.gather(*list(self._tasks), return_exceptions=True)
+            if self._native_calls:
+                # A native call still in an executor thread would hit a
+                # deleted handle ("PeerConnection ID does not exist").
+                await asyncio.gather(*list(self._native_calls))
             for dc in self._data_channels:
                 dc._destroy()
             await self._loop.run_in_executor(None, self._native.destroy)
