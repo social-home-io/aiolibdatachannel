@@ -24,10 +24,11 @@ from __future__ import annotations
 import atexit
 import contextlib
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 from . import _native  # type: ignore[attr-defined]  # compiled extension
+from .exceptions import ConnectionClosedError
 
 __all__ = [
     "ERR_FAILURE",
@@ -190,7 +191,7 @@ _native.register_dispatcher(_dispatch)
 
 
 class PeerConnection:
-    __slots__ = ("_callbacks", "_destroyed", "_handle")
+    __slots__ = ("_callbacks", "_destroyed", "_handle", "_lock")
 
     def __init__(
         self,
@@ -217,12 +218,26 @@ class PeerConnection:
         )
         self._callbacks: dict[str, Callable[..., None]] = {}
         self._destroyed = False
+        # Held across every native call that takes the handle and across
+        # the flip to destroyed: a call already in the native layer
+        # finishes before ``destroy`` deletes the handle, and a later one
+        # raises instead of passing a deleted id to libdatachannel
+        # ("PeerConnection ID does not exist" at ERROR). Reentrant: a
+        # callback never takes it, but a caller may nest.
+        self._lock = threading.RLock()
         with _pc_lock:
             _pcs[self._handle] = self
 
     @property
     def handle(self) -> int:
         return self._handle
+
+    @contextlib.contextmanager
+    def _alive(self) -> Iterator[int]:
+        with self._lock:
+            if self._destroyed:
+                raise ConnectionClosedError("peer connection is closed")
+            yield self._handle
 
     def __del__(self) -> None:  # pragma: no cover - shutdown path
         with contextlib.suppress(Exception):
@@ -235,64 +250,73 @@ class PeerConnection:
         callback: Callable[[str, str], None],
     ) -> None:
         self._callbacks["local_description"] = callback
-        _native.set_local_description_callback(self._handle, True)
+        with self._alive() as handle:
+            _native.set_local_description_callback(handle, True)
 
     def set_on_local_candidate(
         self,
         callback: Callable[[str, str], None],
     ) -> None:
         self._callbacks["local_candidate"] = callback
-        _native.set_local_candidate_callback(self._handle, True)
+        with self._alive() as handle:
+            _native.set_local_candidate_callback(handle, True)
 
     def set_on_state_change(self, callback: Callable[[int], None]) -> None:
         self._callbacks["state_change"] = callback
-        _native.set_state_change_callback(self._handle, True)
+        with self._alive() as handle:
+            _native.set_state_change_callback(handle, True)
 
     def set_on_ice_state_change(self, callback: Callable[[int], None]) -> None:
         self._callbacks["ice_state_change"] = callback
-        _native.set_ice_state_change_callback(self._handle, True)
+        with self._alive() as handle:
+            _native.set_ice_state_change_callback(handle, True)
 
     def set_on_gathering_state_change(
         self,
         callback: Callable[[int], None],
     ) -> None:
         self._callbacks["gathering_state_change"] = callback
-        _native.set_gathering_state_change_callback(self._handle, True)
+        with self._alive() as handle:
+            _native.set_gathering_state_change_callback(handle, True)
 
     def set_on_signaling_state_change(
         self,
         callback: Callable[[int], None],
     ) -> None:
         self._callbacks["signaling_state_change"] = callback
-        _native.set_signaling_state_change_callback(self._handle, True)
+        with self._alive() as handle:
+            _native.set_signaling_state_change_callback(handle, True)
 
     def set_on_data_channel(self, callback: Callable[[int], None]) -> None:
         self._callbacks["data_channel"] = callback
-        _native.set_data_channel_callback(self._handle, True)
+        with self._alive() as handle:
+            _native.set_data_channel_callback(handle, True)
 
     # ---- SDP plumbing ---------------------------------------------------
 
     def set_local_description(self, type: str | None = None) -> None:
-        _native.set_local_description(self._handle, type)
+        with self._alive() as handle:
+            _native.set_local_description(handle, type)
 
     def set_remote_description(self, sdp: str, type: str) -> None:
-        _native.set_remote_description(self._handle, sdp, type)
+        with self._alive() as handle:
+            _native.set_remote_description(handle, sdp, type)
 
     def add_remote_candidate(self, candidate: str, mid: str = "") -> None:
-        _native.add_remote_candidate(
-            self._handle,
-            candidate,
-            mid if mid else None,
-        )
+        with self._alive() as handle:
+            _native.add_remote_candidate(handle, candidate, mid if mid else None)
 
     def get_local_description(self) -> str | None:
-        return _native.get_local_description(self._handle)
+        with self._alive() as handle:
+            return _native.get_local_description(handle)
 
     def get_remote_description(self) -> str | None:
-        return _native.get_remote_description(self._handle)
+        with self._alive() as handle:
+            return _native.get_remote_description(handle)
 
     def get_local_description_type(self) -> str | None:
-        return _native.get_local_description_type(self._handle)
+        with self._alive() as handle:
+            return _native.get_local_description_type(handle)
 
     # ---- DataChannel creation ------------------------------------------
 
@@ -308,30 +332,36 @@ class PeerConnection:
         manual_stream: bool = False,
         stream: int = 0,
     ) -> int:
-        return _native.create_data_channel(
-            self._handle,
-            label,
-            unordered=unordered,
-            unreliable=unreliable,
-            max_packet_lifetime=max_packet_lifetime,
-            max_retransmits=max_retransmits,
-            protocol=protocol,
-            negotiated=negotiated,
-            manual_stream=manual_stream,
-            stream=stream,
-        )
+        with self._alive() as handle:
+            return int(
+                _native.create_data_channel(
+                    handle,
+                    label,
+                    unordered=unordered,
+                    unreliable=unreliable,
+                    max_packet_lifetime=max_packet_lifetime,
+                    max_retransmits=max_retransmits,
+                    protocol=protocol,
+                    negotiated=negotiated,
+                    manual_stream=manual_stream,
+                    stream=stream,
+                )
+            )
 
     # ---- Lifecycle -----------------------------------------------------
 
     def close(self) -> None:
-        if self._destroyed:
-            return
-        _native.close_peer_connection(self._handle)
+        with self._lock:
+            if self._destroyed:
+                return
+            _native.close_peer_connection(self._handle)
 
     def destroy(self) -> None:
-        if self._destroyed:
-            return
-        self._destroyed = True
+        with self._lock:
+            # Waits for a native call in flight on another thread.
+            if self._destroyed:
+                return
+            self._destroyed = True
         handle = self._handle
         self._callbacks.clear()
         with _pc_lock:
