@@ -8,6 +8,17 @@
 		"ghcr.io/devcontainers/features/python:1": {},
 		"ghcr.io/devcontainers/features/github-cli:1": {},
 		"ghcr.io/jsburckhardt/devcontainer-features/uv:1": {}
+	},
+
+	// Claude Code in user mode (~/.local/bin, auto-updates without sudo).
+	"postCreateCommand": ".devcontainer/post-create.sh",
+	"remoteEnv": {
+		"PATH": "${containerEnv:PATH}:/home/vscode/.local/bin"
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": ["anthropic.claude-code"]
+		}
 	}
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
@@ -15,9 +26,6 @@
 
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
 	// "forwardPorts": [],
-
-	// Configure tool-specific properties.
-	// "customizations": {},
 
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"
