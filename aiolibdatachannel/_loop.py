@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 __all__ = ["FutureSlot", "schedule"]
 
@@ -36,7 +36,7 @@ def schedule(loop: asyncio.AbstractEventLoop, fn: Callable[..., Any], *args: Any
         loop.call_soon_threadsafe(fn, *args)
 
 
-class FutureSlot[T]:
+class FutureSlot(Generic[T]):
     """A latched :class:`asyncio.Future` that may be resolved at most once.
 
     Subsequent ``set_result``/``set_exception`` calls after the future is

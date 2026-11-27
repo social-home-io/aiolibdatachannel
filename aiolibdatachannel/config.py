@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import TypeAlias
 from urllib.parse import quote
 
 from .enums import CertificateType, TransportPolicy
@@ -49,7 +50,7 @@ class IceServer:
         return f"{scheme}:{user}:{cred}@{remainder}"
 
 
-type IceServerLike = str | IceServer
+IceServerLike: TypeAlias = str | IceServer
 
 
 @dataclass(slots=True, kw_only=True)

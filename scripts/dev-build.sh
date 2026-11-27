@@ -7,7 +7,8 @@ cd "$ROOT"
 
 if [[ ! -d .venv ]]; then
     echo "==> Creating .venv..."
-    python3.12 -m venv .venv
+    # Any CPython >= 3.10 works; override with PYTHON=python3.X.
+    "${PYTHON:-python3}" -m venv .venv
 fi
 
 # shellcheck disable=SC1091
