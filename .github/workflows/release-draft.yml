@@ -22,7 +22,7 @@ name: Release — draft
 #
 # Publishing the draft (in the UI, or ``gh release edit <tag>
 # --draft=false``) is what creates the CalVer tag, and THAT tag push is
-# what fires ``release.yml`` → sdist + cp312/cp313/cp314 wheels → PyPI via
+# what fires ``release.yml`` → sdist + cp310–cp315 wheels → PyPI via
 # OIDC trusted publishing. setuptools-scm reads the pushed tag and bakes it
 # into the artifacts, so the tag IS the version — there is nothing to edit
 # in ``pyproject.toml``.

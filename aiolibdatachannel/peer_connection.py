@@ -9,7 +9,10 @@ import threading
 from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Literal, Self, TypeVar, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeVar, cast, get_args
+
+if TYPE_CHECKING:  # typing.Self is 3.11+; only type checkers need it (annotations are lazy)
+    from typing_extensions import Self
 
 from . import _core
 from ._loop import FutureSlot, schedule
@@ -37,8 +40,8 @@ __all__ = [
 
 _T = TypeVar("_T")
 
-type SdpType = Literal["offer", "answer", "pranswer", "rollback"]
-_SDP_TYPES: frozenset[str] = frozenset(get_args(SdpType.__value__))
+SdpType: TypeAlias = Literal["offer", "answer", "pranswer", "rollback"]
+_SDP_TYPES: frozenset[str] = frozenset(get_args(SdpType))
 
 
 def _coerce_sdp_type(raw: str | None, default: SdpType = "offer") -> SdpType:
@@ -121,7 +124,7 @@ class DataChannelEvent:
     channel: DataChannel
 
 
-type PCEvent = (
+PCEvent: TypeAlias = (
     LocalDescriptionEvent
     | LocalCandidateEvent
     | StateChangeEvent

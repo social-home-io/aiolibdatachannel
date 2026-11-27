@@ -8,8 +8,8 @@ and produce a release wheel locally.
 
 All platforms need:
 
-- **Python 3.12 or newer** — headers must be available (on Debian/Ubuntu
-  install `python3.12-dev`).
+- **Python 3.10 or newer** — headers must be available (on Debian/Ubuntu
+  install `python3-dev`, or the versioned package such as `python3.10-dev`).
 - **CMake ≥ 3.24** and **Ninja** (the build backend falls back to Make
   if Ninja isn't present).
 - **A C++17 compiler**: GCC ≥ 10, Clang ≥ 11, or MSVC 2019+.
@@ -19,8 +19,8 @@ Platform specifics:
 
 | Platform | Install command |
 |---|---|
-| Debian / Ubuntu | `sudo apt install build-essential cmake ninja-build libssl-dev python3.12-dev` |
-| Fedora | `sudo dnf install gcc-c++ cmake ninja-build openssl-devel python3.12-devel` |
+| Debian / Ubuntu | `sudo apt install build-essential cmake ninja-build libssl-dev python3-dev` |
+| Fedora | `sudo dnf install gcc-c++ cmake ninja-build openssl-devel python3-devel` |
 | macOS | `brew install cmake ninja openssl@3` (set `OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)` if CMake can't find it) |
 | Windows | Install Visual Studio 2022 Build Tools; `choco install cmake ninja openssl` or use vcpkg |
 
@@ -121,14 +121,13 @@ Release wheels are produced by `.github/workflows/release.yml` using
 
 | Platform | Tags |
 |---|---|
-| Linux | `manylinux_2_28` x86_64 + aarch64 |
-| macOS | x86_64 + arm64 |
-| Windows | AMD64 |
+| Linux | `manylinux_2_34` x86_64 + aarch64 |
+| macOS | arm64 |
 
-Wheels ship the Python source as-is plus the bundled
-`libdatachannel.{so,dylib,dll}`; cffi loads it at runtime. A single
-`py3-none-<platform>` wheel per `(os, arch)` covers every supported
-Python interpreter — no per-version build or stable-ABI tagging needed.
+One wheel is built per CPython version — `cp310`, `cp311`, `cp312`,
+`cp313`, `cp314` and `cp315`. Each wheel contains the nanobind extension
+(`aiolibdatachannel/_native`) with libdatachannel, usrsctp and libjuice
+statically linked in. Windows wheels aren't published yet.
 
 ## Troubleshooting
 

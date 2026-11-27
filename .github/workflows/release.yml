@@ -88,9 +88,10 @@ jobs:
           echo "MACOSX_DEPLOYMENT_TARGET=${target}"
 
       # cibuildwheel v3 added the runtime images for CPython 3.14 + the
-      # AlmaLinux 9 (manylinux_2_34) base used below. v2.21 ships
-      # neither.
-      - uses: pypa/cibuildwheel@v3.4
+      # AlmaLinux 9 (manylinux_2_34) base used below; v4.2 is the first
+      # release that builds CPython 3.15 without the
+      # ``cpython-prerelease`` enable flag.
+      - uses: pypa/cibuildwheel@v4.3
         env:
           # cibuildwheel tars the project and runs pip inside a manylinux
           # container — git history isn't available there, so we forward
@@ -98,7 +99,8 @@ jobs:
           SETUPTOOLS_SCM_PRETEND_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           CIBW_ENVIRONMENT_PASS_LINUX: "SETUPTOOLS_SCM_PRETEND_VERSION"
           CIBW_ARCHS: ${{ matrix.arch }}
-          # Per-Python-version wheels (cp312 / cp313 / cp314) instead of
+          # Per-Python-version wheels (cp310 / cp311 / cp312 / cp313 /
+          # cp314 / cp315) instead of
           # the previous ABI3 single-wheel layout. The ABI3 wheel
           # statically bundled OpenSSL via auditwheel and the bundled
           # copy collided with CPython's own ``_ssl`` OpenSSL on 3.14
@@ -111,7 +113,7 @@ jobs:
           # follow-up move is to teach auditwheel to *not* bundle
           # ``libssl`` / ``libcrypto`` and depend on the host's
           # OpenSSL 3 instead.
-          CIBW_BUILD: "cp312-* cp313-* cp314-*"
+          CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-* cp314-* cp315-*"
           CIBW_SKIP: "*-musllinux_*"
           # AlmaLinux 9 (manylinux_2_34) ships OpenSSL 3.x. The previous
           # manylinux_2_28 base baked in OpenSSL 1.1.1, which auditwheel

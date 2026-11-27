@@ -17,7 +17,8 @@ pip install aiolibdatachannel
 ```
 
 Wheels are published for Linux (`manylinux_2_34` x86_64 / aarch64) and
-macOS (arm64, 14.0+) per CPython version (`cp312` / `cp313` / `cp314`).
+macOS (arm64, 14.0+) per CPython version (`cp310` / `cp311` / `cp312` / `cp313` / `cp314` /
+`cp315`).
 Intel Macs and Windows aren't currently covered — Intel Mac because
 Apple Silicon is the modern target, Windows because libdatachannel
 dynamically links OpenSSL and the wheel packaging for that on Windows
